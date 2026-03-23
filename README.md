@@ -39,3 +39,33 @@ bash install_linux.sh
 | `server.py` | Main server application |
 | `config.py` | Server configuration |
 | `requirements.txt` | Python dependencies |
+
+## Pre-built Installers
+
+For the easiest experience, download the pre-built installer for your platform:
+
+### Windows (.exe)
+Download `PictureViewerServer.exe` from the [Releases page](../../releases). Double-click to run — no Python installation needed. A setup wizard will guide you through configuration.
+
+### macOS (.dmg)
+Download `PictureViewerServer.dmg` from the [Releases page](../../releases). Open the DMG and drag the app to Applications. On first launch, a setup wizard will configure your server.
+
+### Building from source
+If you prefer to build the installers yourself:
+
+**Windows (requires Python 3.8+ on Windows):**
+```bash
+pip install pyinstaller
+pip install -r requirements.txt
+cd installer/windows
+pyinstaller pictureviewer.spec --noconfirm
+```
+The `.exe` will be in `installer/windows/dist/`.
+
+**macOS:**
+```bash
+pip3 install Pillow
+python3 installer/icon/generate_icons.py
+bash installer/macos/build_macos.sh
+```
+The `.dmg` will be in `installer/macos/`.
