@@ -131,7 +131,14 @@ def authenticate():
 
 @app.route("/api/status", methods=["GET"])
 def status():
-    return jsonify({"status": "ok", "name": "Lumina Gallery Server"})
+    folder = config.MEDIA_FOLDER
+    return jsonify({
+        "status": "ok",
+        "name": "Lumina Gallery Server",
+        "media_folder": folder,
+        "media_folder_name": os.path.basename(folder.rstrip(os.sep)) or folder,
+        "media_folder_accessible": os.path.isdir(folder),
+    })
 
 
 @app.route("/api/files", methods=["GET"])
