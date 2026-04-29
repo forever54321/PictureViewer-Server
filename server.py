@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PictureViewer Server - Secure media file server for the PictureViewer iOS app.
+Lumina Gallery Server - Secure media file server for the Lumina Gallery iOS app.
 Run this on your Mac or PC to share a folder of photos and videos.
 """
 
@@ -16,17 +16,63 @@ from functools import wraps
 from flask import Flask, request, jsonify, send_file, abort
 from flask_cors import CORS
 from PIL import Image, ImageOps
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 import jwt
 
 import config
 
+import tempfile
+
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+# Set very high limits for large video uploads
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024 * 1024  # 16GB
+
+# Fix Werkzeug form parsing limits for large uploads
+try:
+    # Werkzeug 3.x
+    from werkzeug.formparser import MultiPartParser
+    MultiPartParser.max_form_memory_size = 16 * 1024 * 1024 * 1024
+except (ImportError, AttributeError):
+    pass
+
+try:
+    # Also try setting on the request class
+    from werkzeug.wrappers import Request as WerkzeugRequest
+    WerkzeugRequest.max_content_length = 16 * 1024 * 1024 * 1024
+    WerkzeugRequest.max_form_memory_size = 16 * 1024 * 1024 * 1024
+    WerkzeugRequest.max_form_parts = 10000
+except (ImportError, AttributeError):
+    pass
+
 CORS(app)
+
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({"error": "File too large for server", "success": False}), 413
 
 # Ensure directories exist
 os.makedirs(config.THUMBNAIL_FOLDER, exist_ok=True)
-os.makedirs(config.MEDIA_FOLDER, exist_ok=True)
+
+# Validate the configured media folder. Do NOT silently create it — if the
+# saved folder is on an external drive that isn't mounted yet, or has been
+# moved/renamed, we want to fail loudly so the user keeps their saved choice
+# instead of getting an empty default folder.
+if not os.path.isdir(config.MEDIA_FOLDER):
+    sys.stderr.write(
+        f"\nERROR: Media folder is not accessible:\n  {config.MEDIA_FOLDER}\n\n"
+        "Possible causes:\n"
+        "  - The drive containing the folder is not mounted\n"
+        "  - The folder was renamed, moved, or deleted\n"
+        "  - PICTUREVIEWER_MEDIA_FOLDER environment variable is wrong\n\n"
+        "Restore the folder, mount the drive, or run setup again to choose "
+        "a new folder.\n"
+    )
+    sys.exit(2)
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +131,7 @@ def authenticate():
 
 @app.route("/api/status", methods=["GET"])
 def status():
-    return jsonify({"status": "ok", "name": "PictureViewer Server"})
+    return jsonify({"status": "ok", "name": "Lumina Gallery Server"})
 
 
 @app.route("/api/files", methods=["GET"])
@@ -206,7 +252,8 @@ def upload_file():
 
     # Validate extension
     ext = Path(file.filename).suffix.lower()
-    if ext not in config.ALL_EXTENSIONS:
+    extra_video = {".3gp", ".flv", ".ts", ".mts", ".m2ts"}
+    if ext not in config.ALL_EXTENSIONS and ext not in extra_video:
         return jsonify({"error": f"Unsupported file type: {ext}"}), 400
 
     # Avoid overwriting – add number suffix if needed
@@ -217,7 +264,11 @@ def upload_file():
         dest = folder / f"{stem}_{counter}{ext}"
         counter += 1
 
-    file.save(str(dest))
+    try:
+        file.save(str(dest))
+    except Exception as e:
+        return jsonify({"error": f"Save failed: {str(e)}"}), 500
+
     return jsonify({
         "success": True,
         "name": dest.name,
@@ -273,7 +324,7 @@ def print_banner():
     ips = get_local_ips()
 
     print("\n" + "=" * 60)
-    print("  PictureViewer Server")
+    print("  Lumina Gallery Server")
     print("=" * 60)
     print(f"  Media folder : {config.MEDIA_FOLDER}")
     print()

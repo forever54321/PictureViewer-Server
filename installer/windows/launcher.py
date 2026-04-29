@@ -200,11 +200,11 @@ def add_autostart():
         pass
 
 
-def show_running_window(ip, port, code, media_folder):
+def show_running_window(ip, port, code, cfg):
     """Show a small status window while server runs."""
     root = tk.Tk()
     root.title("PictureViewer Server")
-    root.geometry("420x300")
+    root.geometry("460x360")
     root.resizable(False, False)
 
     bg = "#1a1a2e"
@@ -221,16 +221,53 @@ def show_running_window(ip, port, code, media_folder):
     info_frame.pack(padx=20, fill="x")
 
     url = f"http://{ip}:{port}"
-    for label, value in [("Server URL:", url), ("Access Code:", code), ("Media Folder:", media_folder)]:
-        row = tk.Frame(info_frame, bg="#16213e")
-        row.pack(fill="x", pady=2)
-        tk.Label(row, text=label, font=("Helvetica", 9, "bold"),
-                 bg="#16213e", fg="#aaaaaa", width=14, anchor="w").pack(side="left")
-        tk.Label(row, text=value, font=("Helvetica", 9),
-                 bg="#16213e", fg=fg, anchor="w").pack(side="left", fill="x")
+    folder_label = tk.Label(info_frame, text="", font=("Helvetica", 9),
+                            bg="#16213e", fg=fg, anchor="w", wraplength=300, justify="left")
+
+    def render_rows():
+        for w in info_frame.winfo_children():
+            w.destroy()
+        for label, value in [("Server URL:", url),
+                             ("Access Code:", code),
+                             ("Media Folder:", cfg["media_folder"])]:
+            row = tk.Frame(info_frame, bg="#16213e")
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label, font=("Helvetica", 9, "bold"),
+                     bg="#16213e", fg="#aaaaaa", width=14, anchor="w").pack(side="left")
+            tk.Label(row, text=value, font=("Helvetica", 9),
+                     bg="#16213e", fg=fg, anchor="w", wraplength=290, justify="left").pack(
+                         side="left", fill="x")
+
+    render_rows()
 
     tk.Label(root, text="Enter the URL and access code in the iOS app to connect.",
              font=("Helvetica", 8), bg=bg, fg="#888888", wraplength=380).pack(pady=(15, 5))
+
+    def change_folder():
+        new_folder = filedialog.askdirectory(
+            title="Choose Media Folder",
+            initialdir=cfg["media_folder"] if os.path.isdir(cfg["media_folder"]) else os.path.expanduser("~")
+        )
+        if not new_folder:
+            return
+        if not os.path.isdir(new_folder):
+            messagebox.showerror("Folder not accessible",
+                                 f"Cannot access:\n{new_folder}")
+            return
+        cfg["media_folder"] = new_folder
+        save_config(cfg)
+
+        # Apply live so the user doesn't have to restart the server
+        try:
+            import config as srv_config
+            srv_config.MEDIA_FOLDER = new_folder
+            os.environ["PICTUREVIEWER_MEDIA_FOLDER"] = new_folder
+        except Exception:
+            pass
+
+        render_rows()
+        messagebox.showinfo("Folder updated",
+                            "Media folder updated. Connected iPhones may need to refresh.")
 
     def on_close():
         root.destroy()
@@ -238,16 +275,55 @@ def show_running_window(ip, port, code, media_folder):
 
     root.protocol("WM_DELETE_WINDOW", on_close)
 
-    quit_btn = tk.Button(root, text="Stop Server", command=on_close,
-                          bg="#e74c3c", fg=fg, relief="flat", padx=20, pady=4,
-                          font=("Helvetica", 9))
-    quit_btn.pack(pady=(5, 15))
+    btn_row = tk.Frame(root, bg=bg)
+    btn_row.pack(pady=(10, 15))
+
+    tk.Button(btn_row, text="Change Folder…", command=change_folder,
+              bg="#7b2ff7", fg=fg, relief="flat", padx=14, pady=4,
+              font=("Helvetica", 9)).pack(side="left", padx=4)
+
+    tk.Button(btn_row, text="Stop Server", command=on_close,
+              bg="#e74c3c", fg=fg, relief="flat", padx=14, pady=4,
+              font=("Helvetica", 9)).pack(side="left", padx=4)
 
     root.mainloop()
 
 
+def ensure_media_folder(cfg):
+    """Validate the saved media folder before starting the server. If missing
+    (e.g. external drive not mounted, folder renamed), prompt the user instead
+    of silently fabricating an empty default folder."""
+    folder = cfg.get("media_folder", "")
+    if folder and os.path.isdir(folder):
+        return cfg
+
+    root = tk.Tk()
+    root.withdraw()
+    msg = (f"Saved media folder is not accessible:\n\n{folder}\n\n"
+           "Choose a new folder, or quit the server.")
+    if not messagebox.askokcancel("PictureViewer — Folder Missing", msg,
+                                  icon="warning", default="ok"):
+        root.destroy()
+        sys.exit(0)
+
+    new_folder = filedialog.askdirectory(
+        title="Choose Media Folder",
+        initialdir=os.path.expanduser("~")
+    )
+    root.destroy()
+
+    if not new_folder or not os.path.isdir(new_folder):
+        sys.exit(0)
+
+    cfg["media_folder"] = new_folder
+    save_config(cfg)
+    return cfg
+
+
 def run_server(cfg):
     """Start the Flask server with the saved config."""
+    cfg = ensure_media_folder(cfg)
+
     os.environ["PICTUREVIEWER_MEDIA_FOLDER"] = cfg["media_folder"]
     os.environ["PICTUREVIEWER_ACCESS_CODE"] = cfg["access_code"]
     os.environ["PICTUREVIEWER_SECRET_KEY"] = cfg["secret_key"]
@@ -261,7 +337,9 @@ def run_server(cfg):
     srv_config.THUMBNAIL_FOLDER = THUMB_DIR
 
     os.makedirs(THUMB_DIR, exist_ok=True)
-    os.makedirs(cfg["media_folder"], exist_ok=True)
+    # Intentionally do NOT mkdir cfg["media_folder"] — ensure_media_folder
+    # already verified it exists. Silent creation here used to mask drive-not-
+    # mounted errors and reset users to an empty default folder.
 
     import server as srv
     ip = get_local_ip()
@@ -275,7 +353,7 @@ def run_server(cfg):
     flask_thread.start()
 
     # Show status window on main thread
-    show_running_window(ip, port, cfg["access_code"], cfg["media_folder"])
+    show_running_window(ip, port, cfg["access_code"], cfg)
 
 
 def main():
