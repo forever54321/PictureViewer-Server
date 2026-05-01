@@ -58,11 +58,20 @@ def request_entity_too_large(error):
 # Ensure directories exist
 os.makedirs(config.THUMBNAIL_FOLDER, exist_ok=True)
 
-# Validate the configured media folder. Do NOT silently create it — if the
-# saved folder is on an external drive that isn't mounted yet, or has been
-# moved/renamed, we want to fail loudly so the user keeps their saved choice
-# instead of getting an empty default folder.
-if not os.path.isdir(config.MEDIA_FOLDER):
+# Validate that at least one configured folder is accessible. With multi-root
+# setups, individual missing roots are reported via /api/status (so the iOS
+# app can flag them) — we only refuse to start if EVERY root is missing.
+_configured_roots = getattr(config, "MEDIA_ROOTS", None)
+if isinstance(_configured_roots, dict) and _configured_roots:
+    _accessible = [n for n, p in _configured_roots.items() if os.path.isdir(p)]
+    if not _accessible:
+        sys.stderr.write(
+            "\nERROR: None of the configured media folders are accessible:\n"
+            + "\n".join(f"  {n}: {p}" for n, p in _configured_roots.items())
+            + "\n\nMount the drive(s) or run setup again.\n"
+        )
+        sys.exit(2)
+elif not os.path.isdir(config.MEDIA_FOLDER):
     sys.stderr.write(
         f"\nERROR: Media folder is not accessible:\n  {config.MEDIA_FOLDER}\n\n"
         "Possible causes:\n"
@@ -107,13 +116,43 @@ def token_required(f):
     return decorated
 
 
-def safe_path(relative: str) -> Path:
-    """Resolve a relative path inside MEDIA_FOLDER and reject traversal."""
-    base = Path(config.MEDIA_FOLDER).resolve()
+def get_roots() -> dict:
+    """Return all configured roots as {name: path}.
+
+    Backwards compatible: if no MEDIA_ROOTS in config, exposes the legacy
+    single MEDIA_FOLDER as a root named "Library".
+    """
+    roots = getattr(config, "MEDIA_ROOTS", None)
+    if isinstance(roots, dict) and roots:
+        return roots
+    return {"Library": config.MEDIA_FOLDER}
+
+
+def get_root_path(name: str) -> str | None:
+    roots = get_roots()
+    if name and name in roots:
+        return roots[name]
+    if name:
+        return None
+    # No name supplied — default to first root.
+    return next(iter(roots.values()), config.MEDIA_FOLDER)
+
+
+def safe_path(relative: str, root_name: str = "") -> Path:
+    """Resolve a relative path inside the chosen root and reject traversal."""
+    root = get_root_path(root_name)
+    if root is None:
+        abort(404, description=f"Unknown folder: {root_name}")
+    base = Path(root).resolve()
     target = (base / relative).resolve()
     if not str(target).startswith(str(base)):
         abort(403)
     return target
+
+
+def relative_to_root(target: Path, root_name: str) -> str:
+    root = get_root_path(root_name) or config.MEDIA_FOLDER
+    return str(target.relative_to(Path(root).resolve()))
 
 
 # ---------------------------------------------------------------------------
@@ -138,14 +177,30 @@ def status():
         "media_folder": folder,
         "media_folder_name": os.path.basename(folder.rstrip(os.sep)) or folder,
         "media_folder_accessible": os.path.isdir(folder),
+        "roots": [
+            {"name": n, "path": p, "accessible": os.path.isdir(p)}
+            for n, p in get_roots().items()
+        ],
+    })
+
+
+@app.route("/api/roots", methods=["GET"])
+@token_required
+def list_roots():
+    return jsonify({
+        "roots": [
+            {"name": n, "path": p, "accessible": os.path.isdir(p)}
+            for n, p in get_roots().items()
+        ]
     })
 
 
 @app.route("/api/files", methods=["GET"])
 @token_required
 def list_files():
+    root_name = request.args.get("root", "")
     subfolder = request.args.get("path", "")
-    folder = safe_path(subfolder)
+    folder = safe_path(subfolder, root_name)
 
     if not folder.is_dir():
         return jsonify({"error": "Folder not found"}), 404
@@ -160,32 +215,32 @@ def list_files():
                 items.append({
                     "name": entry.name,
                     "type": "folder",
-                    "path": str(entry.relative_to(Path(config.MEDIA_FOLDER).resolve())),
+                    "path": relative_to_root(entry, root_name),
                 })
             elif entry.suffix.lower() in config.ALL_EXTENSIONS:
                 stat = entry.stat()
                 is_video = entry.suffix.lower() in config.VIDEO_EXTENSIONS
-                rel = str(entry.relative_to(Path(config.MEDIA_FOLDER).resolve()))
                 items.append({
                     "name": entry.name,
                     "type": "video" if is_video else "image",
-                    "path": rel,
+                    "path": relative_to_root(entry, root_name),
                     "size": stat.st_size,
                     "modified": stat.st_mtime,
                 })
     except PermissionError:
         return jsonify({"error": "Permission denied"}), 403
 
-    return jsonify({"items": items, "path": subfolder})
+    return jsonify({"items": items, "path": subfolder, "root": root_name})
 
 
 @app.route("/api/file", methods=["GET"])
 @token_required
 def get_file():
     rel = request.args.get("path", "")
+    root_name = request.args.get("root", "")
     if not rel:
         return jsonify({"error": "path required"}), 400
-    target = safe_path(rel)
+    target = safe_path(rel, root_name)
     if not target.is_file():
         return jsonify({"error": "File not found"}), 404
 
@@ -211,11 +266,12 @@ def get_file():
 @token_required
 def get_thumbnail():
     rel = request.args.get("path", "")
+    root_name = request.args.get("root", "")
     size = int(request.args.get("size", 300))
     if not rel:
         return jsonify({"error": "path required"}), 400
 
-    target = safe_path(rel)
+    target = safe_path(rel, root_name)
     if not target.is_file():
         return jsonify({"error": "File not found"}), 404
 
@@ -224,7 +280,7 @@ def get_thumbnail():
         return send_file(target, mimetype=mimetypes.guess_type(str(target))[0] or "video/mp4")
 
     # Generate / serve cached thumbnail
-    cache_key = hashlib.md5(f"{rel}_{size}_{target.stat().st_mtime}".encode()).hexdigest()
+    cache_key = hashlib.md5(f"{root_name}_{rel}_{size}_{target.stat().st_mtime}".encode()).hexdigest()
     thumb_path = os.path.join(config.THUMBNAIL_FOLDER, f"{cache_key}.jpg")
 
     if not os.path.exists(thumb_path):
@@ -245,7 +301,8 @@ def get_thumbnail():
 @token_required
 def upload_file():
     subfolder = request.form.get("path", "")
-    folder = safe_path(subfolder)
+    root_name = request.form.get("root", "")
+    folder = safe_path(subfolder, root_name)
 
     if not folder.is_dir():
         os.makedirs(folder, exist_ok=True)
@@ -279,7 +336,8 @@ def upload_file():
     return jsonify({
         "success": True,
         "name": dest.name,
-        "path": str(dest.relative_to(Path(config.MEDIA_FOLDER).resolve())),
+        "path": relative_to_root(dest, root_name),
+        "root": root_name,
     })
 
 
@@ -287,16 +345,20 @@ def upload_file():
 @token_required
 def list_folders():
     """List all sub-folders recursively for navigation."""
+    root_name = request.args.get("root", "")
+    root_path = get_root_path(root_name)
+    if root_path is None or not os.path.isdir(root_path):
+        return jsonify({"folders": [], "root": root_name})
     folders = []
-    base = Path(config.MEDIA_FOLDER).resolve()
+    base = Path(root_path).resolve()
     for root, dirs, _ in os.walk(base):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
-        root_path = Path(root)
-        rel = str(root_path.relative_to(base))
+        root_pathobj = Path(root)
+        rel = str(root_pathobj.relative_to(base))
         if rel == ".":
             rel = ""
         folders.append(rel)
-    return jsonify({"folders": folders})
+    return jsonify({"folders": folders, "root": root_name})
 
 
 # ---------------------------------------------------------------------------

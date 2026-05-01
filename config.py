@@ -9,6 +9,11 @@ PORT = 8500
 # Media folder - change this to your desired folder path
 MEDIA_FOLDER = os.environ.get("PICTUREVIEWER_MEDIA_FOLDER", str(Path.home() / "Pictures"))
 
+# Multiple shared roots — populated by the launcher from config.json. The iOS
+# app picks which root to view/upload to. Empty/unset means single-root mode
+# using MEDIA_FOLDER as a root named "Library".
+MEDIA_ROOTS: dict = {}
+
 # Thumbnail cache
 THUMBNAIL_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".thumbnails")
 
@@ -23,4 +28,4 @@ ACCESS_CODE = os.environ.get("PICTUREVIEWER_ACCESS_CODE", "picture123")
 TOKEN_EXPIRY_HOURS = 720  # 30 days
 
 # Upload settings
-MAX_UPLOAD_SIZE_MB = 500
+MAX_UPLOAD_SIZE_MB = 10240  # 10GB max

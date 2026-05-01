@@ -238,36 +238,68 @@ def show_running_window(ip, port, code, cfg):
                      bg="#16213e", fg=fg, anchor="w", wraplength=290, justify="left").pack(
                          side="left", fill="x")
 
+    def render_folder_list():
+        # Add roots summary BELOW the basic info rows
+        roots = cfg.get("media_roots") or {"Library": cfg["media_folder"]}
+        cfg["media_roots"] = roots  # ensure persisted
+        summary = "\n".join(f"  • {n}: {p}" for n, p in roots.items())
+        roots_label.config(text=f"Folders shared ({len(roots)}):\n{summary}")
+
+    roots_label = tk.Label(root, text="", font=("Helvetica", 8),
+                           bg=bg, fg="#bbbbbb", justify="left", wraplength=420)
+    roots_label.pack(padx=20, pady=(8, 0), fill="x")
+    render_folder_list()
+
     render_rows()
 
     tk.Label(root, text="Enter the URL and access code in the iOS app to connect.",
-             font=("Helvetica", 8), bg=bg, fg="#888888", wraplength=380).pack(pady=(15, 5))
+             font=("Helvetica", 8), bg=bg, fg="#888888", wraplength=380).pack(pady=(8, 5))
+
+    def apply_roots_to_running_server():
+        try:
+            import config as srv_config
+            srv_config.MEDIA_ROOTS = cfg.get("media_roots", {})
+            # First root becomes the legacy MEDIA_FOLDER for backward compat.
+            first = next(iter(cfg.get("media_roots", {}).values()), cfg["media_folder"])
+            srv_config.MEDIA_FOLDER = first
+            cfg["media_folder"] = first
+            os.environ["PICTUREVIEWER_MEDIA_FOLDER"] = first
+        except Exception:
+            pass
 
     def change_folder():
         new_folder = filedialog.askdirectory(
-            title="Choose Media Folder",
+            title="Choose Primary Folder",
             initialdir=cfg["media_folder"] if os.path.isdir(cfg["media_folder"]) else os.path.expanduser("~")
         )
         if not new_folder:
             return
         if not os.path.isdir(new_folder):
-            messagebox.showerror("Folder not accessible",
-                                 f"Cannot access:\n{new_folder}")
+            messagebox.showerror("Folder not accessible", f"Cannot access:\n{new_folder}")
             return
+
+        # If single-root setup, just rename the existing root; else replace primary.
+        roots = cfg.get("media_roots", {})
+        if not roots:
+            roots = {"Library": new_folder}
+        else:
+            first_name = next(iter(roots))
+            roots[first_name] = new_folder
+        cfg["media_roots"] = roots
         cfg["media_folder"] = new_folder
         save_config(cfg)
-
-        # Apply live so the user doesn't have to restart the server
-        try:
-            import config as srv_config
-            srv_config.MEDIA_FOLDER = new_folder
-            os.environ["PICTUREVIEWER_MEDIA_FOLDER"] = new_folder
-        except Exception:
-            pass
-
+        apply_roots_to_running_server()
         render_rows()
-        messagebox.showinfo("Folder updated",
-                            "Media folder updated. Connected iPhones may need to refresh.")
+        render_folder_list()
+        messagebox.showinfo("Folder updated", "Folder updated. Pull-to-refresh on the iPhone.")
+
+    def manage_folders():
+        ManageFoldersDialog(root, cfg, on_save=lambda: (
+            save_config(cfg),
+            apply_roots_to_running_server(),
+            render_rows(),
+            render_folder_list()
+        ))
 
     def on_close():
         root.destroy()
@@ -282,11 +314,115 @@ def show_running_window(ip, port, code, cfg):
               bg="#7b2ff7", fg=fg, relief="flat", padx=14, pady=4,
               font=("Helvetica", 9)).pack(side="left", padx=4)
 
+    tk.Button(btn_row, text="Manage Folders…", command=manage_folders,
+              bg="#7b2ff7", fg=fg, relief="flat", padx=14, pady=4,
+              font=("Helvetica", 9)).pack(side="left", padx=4)
+
     tk.Button(btn_row, text="Stop Server", command=on_close,
               bg="#e74c3c", fg=fg, relief="flat", padx=14, pady=4,
               font=("Helvetica", 9)).pack(side="left", padx=4)
 
     root.mainloop()
+
+
+class ManageFoldersDialog:
+    def __init__(self, parent, cfg, on_save):
+        self.cfg = cfg
+        self.on_save = on_save
+        self.win = tk.Toplevel(parent)
+        self.win.title("Manage Shared Folders")
+        self.win.geometry("520x420")
+        self.win.configure(bg="#1a1a2e")
+
+        tk.Label(self.win, text="Shared Folders", font=("Helvetica", 14, "bold"),
+                 bg="#1a1a2e", fg="#ffffff").pack(pady=(15, 5))
+        tk.Label(self.win, text="Each folder shows up as a separate library on the iPhone.",
+                 font=("Helvetica", 9), bg="#1a1a2e", fg="#aaaaaa").pack(pady=(0, 10))
+
+        self.listbox = tk.Listbox(self.win, bg="#16213e", fg="#ffffff",
+                                   selectbackground="#7b2ff7", relief="flat",
+                                   font=("Helvetica", 10), height=10)
+        self.listbox.pack(padx=20, pady=8, fill="both", expand=True)
+
+        self.refresh_list()
+
+        btn = tk.Frame(self.win, bg="#1a1a2e")
+        btn.pack(pady=10)
+
+        tk.Button(btn, text="Add Folder…", command=self.add_folder,
+                  bg="#7b2ff7", fg="#ffffff", relief="flat", padx=12, pady=4).pack(side="left", padx=4)
+        tk.Button(btn, text="Rename", command=self.rename,
+                  bg="#1f4068", fg="#ffffff", relief="flat", padx=12, pady=4).pack(side="left", padx=4)
+        tk.Button(btn, text="Remove", command=self.remove,
+                  bg="#e74c3c", fg="#ffffff", relief="flat", padx=12, pady=4).pack(side="left", padx=4)
+        tk.Button(btn, text="Done", command=self.close,
+                  bg="#00ff88", fg="#000000", relief="flat", padx=18, pady=4).pack(side="left", padx=12)
+
+    def refresh_list(self):
+        self.listbox.delete(0, tk.END)
+        roots = self.cfg.get("media_roots") or {"Library": self.cfg.get("media_folder", "")}
+        self.cfg["media_roots"] = roots
+        for name, path in roots.items():
+            ok = os.path.isdir(path)
+            mark = "✓" if ok else "✗"
+            self.listbox.insert(tk.END, f"{mark}  {name}  →  {path}")
+
+    def add_folder(self):
+        new_path = filedialog.askdirectory(title="Choose folder to share")
+        if not new_path:
+            return
+        # Ask for a display name
+        from tkinter import simpledialog
+        suggested = os.path.basename(new_path.rstrip(os.sep)) or "Folder"
+        name = simpledialog.askstring("Folder Name", "Display name on the iPhone:",
+                                       parent=self.win, initialvalue=suggested)
+        if not name:
+            return
+        roots = self.cfg.setdefault("media_roots", {})
+        if name in roots:
+            messagebox.showerror("Name in use", f"A folder named '{name}' already exists.")
+            return
+        roots[name] = new_path
+        self.refresh_list()
+
+    def rename(self):
+        sel = self.listbox.curselection()
+        if not sel:
+            return
+        roots = self.cfg.get("media_roots", {})
+        old_name = list(roots.keys())[sel[0]]
+        from tkinter import simpledialog
+        new_name = simpledialog.askstring("Rename", "New name:", parent=self.win, initialvalue=old_name)
+        if not new_name or new_name == old_name:
+            return
+        if new_name in roots:
+            messagebox.showerror("Name in use", f"A folder named '{new_name}' already exists.")
+            return
+        roots[new_name] = roots.pop(old_name)
+        # Preserve key order best-effort
+        self.cfg["media_roots"] = roots
+        self.refresh_list()
+
+    def remove(self):
+        sel = self.listbox.curselection()
+        if not sel:
+            return
+        roots = self.cfg.get("media_roots", {})
+        if len(roots) <= 1:
+            messagebox.showerror("Cannot remove", "At least one folder must be shared.")
+            return
+        name = list(roots.keys())[sel[0]]
+        if messagebox.askyesno("Remove", f"Remove '{name}' from shared folders?\n(The actual folder is not deleted.)"):
+            roots.pop(name)
+            self.refresh_list()
+
+    def close(self):
+        # Make sure the legacy media_folder points at the first root.
+        roots = self.cfg.get("media_roots", {})
+        if roots:
+            self.cfg["media_folder"] = next(iter(roots.values()))
+        self.on_save()
+        self.win.destroy()
 
 
 def ensure_media_folder(cfg):
@@ -324,6 +460,11 @@ def run_server(cfg):
     """Start the Flask server with the saved config."""
     cfg = ensure_media_folder(cfg)
 
+    # Default the media_roots dict if missing (single-folder install).
+    if "media_roots" not in cfg or not cfg["media_roots"]:
+        cfg["media_roots"] = {"Library": cfg["media_folder"]}
+        save_config(cfg)
+
     os.environ["PICTUREVIEWER_MEDIA_FOLDER"] = cfg["media_folder"]
     os.environ["PICTUREVIEWER_ACCESS_CODE"] = cfg["access_code"]
     os.environ["PICTUREVIEWER_SECRET_KEY"] = cfg["secret_key"]
@@ -331,6 +472,7 @@ def run_server(cfg):
     # Patch config module
     import config as srv_config
     srv_config.MEDIA_FOLDER = cfg["media_folder"]
+    srv_config.MEDIA_ROOTS = cfg["media_roots"]
     srv_config.ACCESS_CODE = cfg["access_code"]
     srv_config.SECRET_KEY = cfg["secret_key"]
     srv_config.PORT = cfg.get("port", 8500)
