@@ -99,14 +99,32 @@ if (-not (Test-Path $serverPyPath) -or -not (Test-Path $configPyPath)) {
 
 Write-Host "  Requirements file: $requirementsFile" -ForegroundColor Gray
 
-# Use venv python -m pip (most reliable on Windows)
+# Use venv python -m pip (most reliable on Windows). --no-cache-dir avoids
+# pip reusing a corrupt cached Pillow wheel that ships without the _imaging
+# C extension and crashes the server at import.
 & $venvPython -m pip install --upgrade pip -q 2>$null
-& $venvPython -m pip install -r "$requirementsFile"
+& $venvPython -m pip install --no-cache-dir -r "$requirementsFile"
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  ERROR: Failed to install dependencies." -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
+}
+
+# Verify Pillow imports correctly. If not, force a clean reinstall.
+& $venvPython -c "from PIL import Image, ImageOps" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  Pillow install was incomplete, repairing..." -ForegroundColor Yellow
+    & $venvPython -m pip install --force-reinstall --no-cache-dir Pillow -q
+    & $venvPython -c "from PIL import Image, ImageOps" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ERROR: Pillow still cannot be imported." -ForegroundColor Red
+        Write-Host "  Install the Microsoft Visual C++ Redistributable from" -ForegroundColor Yellow
+        Write-Host "    https://aka.ms/vs/17/release/vc_redist.x64.exe" -ForegroundColor Yellow
+        Write-Host "  and re-run this installer." -ForegroundColor Yellow
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
 }
 Write-Host "  Dependencies installed successfully." -ForegroundColor Green
 

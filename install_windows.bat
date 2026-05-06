@@ -32,8 +32,25 @@ python -m venv "%VENV_DIR%"
 REM Install dependencies
 echo Installing dependencies...
 call "%VENV_DIR%\Scripts\activate.bat"
-pip install --upgrade pip -q
-pip install -r "%SCRIPT_DIR%requirements.txt" -q
+"%VENV_DIR%\Scripts\python.exe" -m pip install --upgrade pip -q
+REM --no-cache-dir avoids pip reusing a corrupt cached Pillow wheel that
+REM ships without the _imaging C extension and crashes the server at import.
+"%VENV_DIR%\Scripts\python.exe" -m pip install --no-cache-dir -r "%SCRIPT_DIR%requirements.txt" -q
+
+REM Verify Pillow imports correctly. If not, force a clean reinstall.
+"%VENV_DIR%\Scripts\python.exe" -c "from PIL import Image, ImageOps" >nul 2>nul
+if %ERRORLEVEL% neq 0 (
+    echo Pillow install was incomplete, repairing...
+    "%VENV_DIR%\Scripts\python.exe" -m pip install --force-reinstall --no-cache-dir Pillow -q
+    "%VENV_DIR%\Scripts\python.exe" -c "from PIL import Image, ImageOps" >nul 2>nul
+    if %ERRORLEVEL% neq 0 (
+        echo ERROR: Pillow still cannot be imported. Install the Microsoft Visual
+        echo C++ Redistributable from https://aka.ms/vs/17/release/vc_redist.x64.exe
+        echo and re-run this installer.
+        pause
+        exit /b 1
+    )
+)
 echo Dependencies installed successfully.
 
 echo.
