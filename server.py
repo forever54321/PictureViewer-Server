@@ -3,18 +3,22 @@
 Lumina Gallery Server - Secure media file server for the Lumina Gallery iOS app.
 Run this on your Mac or PC to share a folder of photos and videos.
 """
+from __future__ import annotations
 
 import os
 import sys
 import json
+import time
+import hmac
 import hashlib
 import datetime
+import ipaddress
 import mimetypes
 from pathlib import Path
 from functools import wraps
 
 from flask import Flask, request, jsonify, send_file, abort
-from flask_cors import CORS
+from werkzeug.utils import secure_filename
 from PIL import Image, ImageOps
 try:
     from pillow_heif import register_heif_opener
@@ -48,7 +52,29 @@ try:
 except (ImportError, AttributeError):
     pass
 
-CORS(app)
+# No CORS headers are emitted. The native iOS client does not need CORS;
+# omitting it stops browsers from reading this server's responses cross-origin.
+
+
+@app.before_request
+def _block_dns_rebinding():
+    """Reject requests whose Host header is a domain name.
+
+    A DNS-rebinding attack works by getting the victim's browser to load a
+    page from attacker.com, then re-pointing attacker.com at this server's
+    LAN IP so the page's JavaScript can talk to it. In that attack the
+    browser still sends `Host: attacker.com`. Legitimate clients reach this
+    server by IP (http://192.168.x.x:8500), so we only accept IP-literal,
+    localhost, or *.local (Bonjour) hosts.
+    """
+    host = (request.host or "").split(":")[0].strip("[]")
+    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local"):
+        return
+    try:
+        ipaddress.ip_address(host)
+        return
+    except ValueError:
+        abort(403, description="Invalid Host header")
 
 
 @app.errorhandler(413)
@@ -138,15 +164,31 @@ def get_root_path(name: str) -> str | None:
     return next(iter(roots.values()), config.MEDIA_FOLDER)
 
 
+def _is_within(target: Path, base: Path) -> bool:
+    """True only if `target` is `base` itself or a descendant of it.
+
+    Uses Path.relative_to rather than str.startswith — the latter is unsafe
+    because "/media/photos" startswith-matches "/media/photos-secret".
+    """
+    try:
+        target.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
 def safe_path(relative: str, root_name: str = "") -> Path:
     """Resolve a relative path inside the chosen root and reject traversal."""
     root = get_root_path(root_name)
     if root is None:
         abort(404, description=f"Unknown folder: {root_name}")
     base = Path(root).resolve()
+    # Reject absolute paths outright; they would escape the join entirely.
+    if os.path.isabs(relative):
+        abort(403, description="Absolute paths are not allowed")
     target = (base / relative).resolve()
-    if not str(target).startswith(str(base)):
-        abort(403)
+    if not _is_within(target, base):
+        abort(403, description="Path is outside the shared folder")
     return target
 
 
@@ -159,26 +201,78 @@ def relative_to_root(target: Path, root_name: str) -> str:
 # Routes
 # ---------------------------------------------------------------------------
 
+# In-memory brute-force throttle for /api/auth. Keyed by client IP.
+_AUTH_MAX_FAILURES = 5      # failures allowed within the window
+_AUTH_WINDOW = 300         # seconds — rolling window for counting failures
+_auth_failures: dict[str, list[float]] = {}
+
+
+def _recent_failures(ip: str, now: float) -> list[float]:
+    return [t for t in _auth_failures.get(ip, []) if now - t < _AUTH_WINDOW]
+
+
 @app.route("/api/auth", methods=["POST"])
 def authenticate():
+    ip = request.remote_addr or "unknown"
+    now = time.time()
+
+    fails = _recent_failures(ip, now)
+    if len(fails) >= _AUTH_MAX_FAILURES:
+        retry_in = int(_AUTH_WINDOW - (now - fails[0]))
+        return jsonify({
+            "error": f"Too many failed attempts. Try again in {retry_in}s."
+        }), 429
+
     data = request.get_json(silent=True) or {}
     code = data.get("code", "")
-    if code == config.ACCESS_CODE:
+
+    # Constant-time comparison defeats timing attacks on the access code.
+    if hmac.compare_digest(str(code), str(config.ACCESS_CODE)):
+        _auth_failures.pop(ip, None)
         return jsonify({"token": create_token()})
+
+    fails.append(now)
+    _auth_failures[ip] = fails
+    # Opportunistically drop stale IP entries so the dict can't grow forever.
+    if len(_auth_failures) > 1000:
+        for k in [k for k, v in _auth_failures.items()
+                  if not _recent_failures(k, now)]:
+            _auth_failures.pop(k, None)
     return jsonify({"error": "Invalid access code"}), 401
+
+
+def _has_valid_token() -> bool:
+    """True if a valid Bearer token is present — without requiring one."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return False
+    try:
+        jwt.decode(auth_header[7:], config.SECRET_KEY, algorithms=["HS256"])
+        return True
+    except jwt.InvalidTokenError:
+        return False
 
 
 @app.route("/api/status", methods=["GET"])
 def status():
     folder = config.MEDIA_FOLDER
+    folder_name = os.path.basename(folder.rstrip(os.sep)) or folder
+    # Absolute filesystem paths reveal the OS username and directory layout,
+    # so only expose them to authenticated clients. Unauthenticated callers
+    # (reachability checks, port scanners) get folder names only.
+    authed = _has_valid_token()
     return jsonify({
         "status": "ok",
         "name": "Lumina Gallery Server",
-        "media_folder": folder,
-        "media_folder_name": os.path.basename(folder.rstrip(os.sep)) or folder,
+        "media_folder": folder if authed else folder_name,
+        "media_folder_name": folder_name,
         "media_folder_accessible": os.path.isdir(folder),
         "roots": [
-            {"name": n, "path": p, "accessible": os.path.isdir(p)}
+            {
+                "name": n,
+                "path": (p if authed else os.path.basename(p.rstrip(os.sep)) or n),
+                "accessible": os.path.isdir(p),
+            }
             for n, p in get_roots().items()
         ],
     })
@@ -314,19 +408,31 @@ def upload_file():
     if not file.filename:
         return jsonify({"error": "Empty filename"}), 400
 
-    # Validate extension
-    ext = Path(file.filename).suffix.lower()
+    # Sanitize the client-supplied filename. werkzeug.secure_filename strips
+    # directory separators and ".." so a malicious filename like
+    # "../../../../etc/cron.d/evil" can't escape the upload folder.
+    safe_name = secure_filename(file.filename)
+    if not safe_name:
+        return jsonify({"error": "Invalid filename"}), 400
+
+    # Validate extension against the allowlist.
+    ext = Path(safe_name).suffix.lower()
     extra_video = {".3gp", ".flv", ".ts", ".mts", ".m2ts"}
     if ext not in config.ALL_EXTENSIONS and ext not in extra_video:
         return jsonify({"error": f"Unsupported file type: {ext}"}), 400
 
     # Avoid overwriting – add number suffix if needed
-    dest = folder / file.filename
+    dest = folder / safe_name
     counter = 1
     while dest.exists():
-        stem = Path(file.filename).stem
+        stem = Path(safe_name).stem
         dest = folder / f"{stem}_{counter}{ext}"
         counter += 1
+
+    # Defense in depth: confirm the final destination is still inside the
+    # shared folder before writing.
+    if not _is_within(dest.resolve(), folder.resolve()):
+        abort(403, description="Resolved upload path is outside the shared folder")
 
     try:
         file.save(str(dest))
@@ -406,6 +512,21 @@ def print_banner():
     print("  Enter one of the URLs above and the access code")
     print("  in the iOS app to connect.")
     print()
+
+    # Security warnings — weak access codes are the main risk on a LAN.
+    if config.ACCESS_CODE == "picture123":
+        print("  *** SECURITY WARNING ***")
+        print("  You are using the DEFAULT access code 'picture123'.")
+        print("  Anyone on your network can connect. Run setup again and")
+        print("  choose a private code (8+ characters).")
+        print("=" * 60)
+        print()
+    elif len(str(config.ACCESS_CODE)) < 6:
+        print("  *** SECURITY WARNING ***")
+        print("  Your access code is short and easy to guess.")
+        print("  Use at least 8 characters for a home network.")
+        print("=" * 60)
+        print()
     print("  TIPS if you can't connect:")
     print("   1. Phone and PC must be on the SAME Wi-Fi network")
     print("   2. Allow Python through Windows Firewall when prompted")
