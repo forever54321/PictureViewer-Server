@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import os
 import sys
+import ssl
 import json
 import time
 import hmac
+import socket
 import hashlib
 import datetime
 import ipaddress
 import mimetypes
+import threading
 from pathlib import Path
 from functools import wraps
 
@@ -198,6 +201,146 @@ def relative_to_root(target: Path, root_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# TLS — self-signed certificate, pinned by the iOS app via SHA-256 fingerprint
+# ---------------------------------------------------------------------------
+
+# Populated by start_servers() so /api/status can report the live ports.
+_runtime = {"http_port": None, "https_port": None}
+
+
+def _cert_paths():
+    """certs live next to the thumbnail cache, in a per-user writable dir."""
+    cert_dir = os.path.join(
+        os.path.dirname(os.path.abspath(config.THUMBNAIL_FOLDER)), "certs"
+    )
+    return (
+        cert_dir,
+        os.path.join(cert_dir, "server-cert.pem"),
+        os.path.join(cert_dir, "server-key.pem"),
+    )
+
+
+def ensure_certificate():
+    """Generate a self-signed cert covering the local IPs / hostnames if one
+    doesn't exist yet. Returns (cert_path, key_path), or (None, None) if the
+    cryptography library isn't installed (server then runs HTTP-only)."""
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+    except ImportError:
+        sys.stderr.write(
+            "Note: 'cryptography' not installed — running HTTP only. "
+            "Run the installer again to enable HTTPS.\n"
+        )
+        return None, None
+
+    cert_dir, cert_path, key_path = _cert_paths()
+    if os.path.isfile(cert_path) and os.path.isfile(key_path):
+        return cert_path, key_path
+
+    os.makedirs(cert_dir, exist_ok=True)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    # Subject Alternative Names — every address a client might connect to.
+    san = [x509.DNSName("localhost")]
+    hostname = socket.gethostname()
+    if hostname:
+        san.append(x509.DNSName(hostname))
+        if not hostname.endswith(".local"):
+            san.append(x509.DNSName(hostname + ".local"))
+    seen_ips = set()
+    for ip in list(get_local_ips()) + ["127.0.0.1"]:
+        if ip in seen_ips:
+            continue
+        seen_ips.add(ip)
+        try:
+            san.append(x509.IPAddress(ipaddress.ip_address(ip)))
+        except ValueError:
+            pass
+
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Lumina Gallery Server")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(x509.SubjectAlternativeName(san), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+
+    with open(cert_path, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+    with open(key_path, "wb") as f:
+        f.write(key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        ))
+    try:
+        os.chmod(key_path, 0o600)  # private key — owner-readable only
+    except OSError:
+        pass
+    return cert_path, key_path
+
+
+def cert_fingerprint() -> str:
+    """Lowercase hex SHA-256 fingerprint of the server certificate.
+
+    Not a secret — it's a public-key hash. The iOS app pins this so it will
+    only ever trust *this* server's self-signed cert. Empty if no cert."""
+    _, cert_path, _ = _cert_paths()
+    if not os.path.isfile(cert_path):
+        return ""
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+        with open(cert_path, "rb") as f:
+            cert = x509.load_pem_x509_certificate(f.read())
+        return cert.fingerprint(hashes.SHA256()).hex()
+    except Exception:
+        return ""
+
+
+def start_servers(http_port: int = None, https_port: int = None):
+    """Start the HTTP server, and the HTTPS server too if a cert is available.
+
+    Both run in background daemon threads; this function returns immediately.
+    The caller is responsible for keeping the process alive."""
+    from werkzeug.serving import make_server
+
+    http_port = http_port or config.PORT
+    https_port = https_port or getattr(config, "HTTPS_PORT", 8543)
+
+    # HTTP — always on (reachability checks + transition for old app versions).
+    http_srv = make_server(config.HOST, http_port, app, threaded=True)
+    threading.Thread(target=http_srv.serve_forever, daemon=True).start()
+    _runtime["http_port"] = http_port
+
+    # HTTPS — best effort. A failure here must not take the server down.
+    cert_path, key_path = ensure_certificate()
+    if cert_path and key_path:
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(cert_path, key_path)
+            https_srv = make_server(
+                config.HOST, https_port, app, threaded=True, ssl_context=ctx
+            )
+            threading.Thread(target=https_srv.serve_forever, daemon=True).start()
+            _runtime["https_port"] = https_port
+        except Exception as e:
+            sys.stderr.write(f"HTTPS could not start ({e}) — continuing HTTP-only.\n")
+
+    return dict(_runtime)
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -267,6 +410,10 @@ def status():
         "media_folder": folder if authed else folder_name,
         "media_folder_name": folder_name,
         "media_folder_accessible": os.path.isdir(folder),
+        # HTTPS discovery — the app upgrades to TLS and pins this fingerprint.
+        "https_port": _runtime.get("https_port"),
+        "https_available": _runtime.get("https_port") is not None,
+        "tls_fingerprint": cert_fingerprint(),
         "roots": [
             {
                 "name": n,
@@ -495,8 +642,10 @@ def get_local_ips():
     return ips if ips else ["Could not detect IP - check manually"]
 
 
-def print_banner():
+def print_banner(started: dict = None):
     ips = get_local_ips()
+    started = started or _runtime
+    https_port = started.get("https_port")
 
     print("\n" + "=" * 60)
     print("  Lumina Gallery Server")
@@ -506,8 +655,14 @@ def print_banner():
     print("  Your server addresses (use any that works):")
     for ip in ips:
         print(f"    -> http://{ip}:{config.PORT}")
+        if https_port:
+            print(f"    -> https://{ip}:{https_port}  (secure)")
     print()
     print(f"  Access Code  : {config.ACCESS_CODE}")
+    if https_port:
+        fp = cert_fingerprint()
+        if fp:
+            print(f"  TLS fingerprint (first 16): {fp[:16]}…")
     print("=" * 60)
     print("  Enter one of the URLs above and the access code")
     print("  in the iOS app to connect.")
@@ -535,5 +690,10 @@ def print_banner():
 
 
 if __name__ == "__main__":
-    print_banner()
-    app.run(host=config.HOST, port=config.PORT, debug=False, threaded=True)
+    started = start_servers()
+    print_banner(started)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        print("\nServer stopped.")

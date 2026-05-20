@@ -476,6 +476,7 @@ def run_server(cfg):
     srv_config.ACCESS_CODE = cfg["access_code"]
     srv_config.SECRET_KEY = cfg["secret_key"]
     srv_config.PORT = cfg.get("port", 8500)
+    srv_config.HTTPS_PORT = cfg.get("https_port", 8543)
     srv_config.THUMBNAIL_FOLDER = THUMB_DIR
 
     os.makedirs(THUMB_DIR, exist_ok=True)
@@ -486,13 +487,10 @@ def run_server(cfg):
     import server as srv
     ip = get_local_ip()
     port = cfg.get("port", 8500)
+    https_port = cfg.get("https_port", 8543)
 
-    # Run Flask in background thread
-    flask_thread = threading.Thread(
-        target=lambda: srv.app.run(host="0.0.0.0", port=port, debug=False, threaded=True),
-        daemon=True
-    )
-    flask_thread.start()
+    # Start HTTP + HTTPS in background daemon threads (non-blocking).
+    srv.start_servers(http_port=port, https_port=https_port)
 
     # Show status window on main thread
     show_running_window(ip, port, cfg["access_code"], cfg)

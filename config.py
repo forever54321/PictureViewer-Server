@@ -4,7 +4,8 @@ from pathlib import Path
 
 # Server Configuration
 HOST = "0.0.0.0"
-PORT = 8500
+PORT = 8500              # plain HTTP (kept during the HTTPS transition)
+HTTPS_PORT = 8543        # TLS — self-signed cert, pinned by the iOS app
 
 # Media folder - change this to your desired folder path
 MEDIA_FOLDER = os.environ.get("PICTUREVIEWER_MEDIA_FOLDER", str(Path.home() / "Pictures"))

@@ -130,9 +130,15 @@ srv_config.THUMBNAIL_FOLDER = os.path.join('$APP_SUPPORT', 'thumbnails')
 
 os.makedirs(srv_config.THUMBNAIL_FOLDER, exist_ok=True)
 
+import time
 import server
-server.print_banner()
-server.app.run(host='0.0.0.0', port=srv_config.PORT, debug=False, threaded=True)
+started = server.start_servers()
+server.print_banner(started)
+try:
+    while True:
+        time.sleep(3600)
+except KeyboardInterrupt:
+    pass
 "
 LAUNCHER
 
