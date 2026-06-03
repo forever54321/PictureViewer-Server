@@ -425,6 +425,35 @@ def status():
     })
 
 
+@app.route("/api/connect-info", methods=["GET"])
+def connect_info():
+    """Unauthenticated — returns the connection bundle needed to generate a
+    pairing QR code.
+
+    The iOS app reads this when the user taps "Show QR Code" so that the
+    server's TLS fingerprint is embedded in the QR payload alongside the URL.
+    A device that scans the QR can then pin the certificate on its very first
+    connection, closing the trust-on-first-use man-in-the-middle window.
+
+    No secrets are exposed: the TLS fingerprint is a public-key hash, and
+    server URLs are already visible on the local network.
+    """
+    ips = get_local_ips()
+    primary_ip = ips[0] if ips else "127.0.0.1"
+    http_port = _runtime.get("http_port") or config.PORT
+    https_port = _runtime.get("https_port")
+
+    info: dict = {
+        "name": "Lumina Gallery Server",
+        "http_url": f"http://{primary_ip}:{http_port}",
+        "tls_fingerprint": cert_fingerprint(),
+    }
+    if https_port:
+        info["https_url"] = f"https://{primary_ip}:{https_port}"
+
+    return jsonify(info)
+
+
 @app.route("/api/roots", methods=["GET"])
 @token_required
 def list_roots():
