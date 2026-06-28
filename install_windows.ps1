@@ -147,8 +147,13 @@ if (-not (Test-Path $mediaFolder)) {
 $port = Read-Host "  Server port [8500]"
 if ([string]::IsNullOrWhiteSpace($port)) { $port = "8500" }
 
-$accessCode = Read-Host "  Access code [picture123]"
-if ([string]::IsNullOrWhiteSpace($accessCode)) { $accessCode = "picture123" }
+# Require a strong, non-default access code. A short or well-known code is
+# trivially brute-forced on a LAN, and the server refuses the default.
+do {
+    $accessCode = Read-Host "  Choose an access code (8+ characters, not 'picture123')"
+    if ($accessCode.Length -ge 8 -and $accessCode -ne 'picture123') { break }
+    Write-Host "  -> Code must be at least 8 characters and not the default. Try again." -ForegroundColor Yellow
+} while ($true)
 
 # Generate secret key
 $secretKey = & $venvPython -c "import secrets; print(secrets.token_hex(32))"
@@ -160,6 +165,9 @@ PICTUREVIEWER_MEDIA_FOLDER=$mediaFolder
 PICTUREVIEWER_ACCESS_CODE=$accessCode
 PICTUREVIEWER_SECRET_KEY=$secretKey
 "@ | Set-Content -Path $envFile -Encoding UTF8
+
+# Restrict the .env (contains SECRET_KEY + ACCESS_CODE) to the current user only.
+icacls "$envFile" /inheritance:r /grant:r "$($env:USERNAME):(F)" | Out-Null
 
 # --- Update port in config if changed ---
 if ($port -ne "8500") {
@@ -219,8 +227,9 @@ if ($addFirewall -notmatch '^[Nn]') {
     try {
         # Remove old rule if exists
         Remove-NetFirewallRule -DisplayName "PictureViewer Server" -ErrorAction SilentlyContinue
-        # Add for both Private and Public profiles
-        New-NetFirewallRule -DisplayName "PictureViewer Server" -Direction Inbound -Protocol TCP -LocalPort $port -Action Allow -Profile Private,Public -ErrorAction Stop | Out-Null
+        # Add for the Private profile only — never expose the server on public
+        # (e.g. coffee-shop) networks.
+        New-NetFirewallRule -DisplayName "PictureViewer Server" -Direction Inbound -Protocol TCP -LocalPort $port -Action Allow -Profile Private -ErrorAction Stop | Out-Null
         Write-Host "  Firewall rule added successfully." -ForegroundColor Green
     } catch {
         Write-Host "  Could not add firewall rule automatically." -ForegroundColor Yellow

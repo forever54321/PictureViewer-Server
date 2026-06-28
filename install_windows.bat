@@ -65,9 +65,17 @@ REM Ask for port
 set /p PORT="Server port [8500]: "
 if "%PORT%"=="" set "PORT=8500"
 
-REM Ask for access code
-set /p ACCESS_CODE="Access code [picture123]: "
-if "%ACCESS_CODE%"=="" set "ACCESS_CODE=picture123"
+REM Ask for a strong, non-default access code. A short or well-known code is
+REM trivially brute-forced on a LAN, and the server refuses the default.
+:get_access_code
+set "ACCESS_CODE="
+set /p ACCESS_CODE="Choose an access code (8+ characters, not 'picture123'): "
+set "CODE_OK="
+for /f %%v in ('powershell -NoProfile -Command "if ($env:ACCESS_CODE.Length -ge 8 -and $env:ACCESS_CODE -ne 'picture123') { 'ok' }"') do set "CODE_OK=%%v"
+if not "%CODE_OK%"=="ok" (
+    echo   -^> Code must be at least 8 characters and not the default. Try again.
+    goto get_access_code
+)
 
 REM Generate secret key
 for /f %%i in ('python -c "import secrets; print(secrets.token_hex(32))"') do set SECRET_KEY=%%i
@@ -78,6 +86,9 @@ echo PICTUREVIEWER_MEDIA_FOLDER=%MEDIA_FOLDER%
 echo PICTUREVIEWER_ACCESS_CODE=%ACCESS_CODE%
 echo PICTUREVIEWER_SECRET_KEY=%SECRET_KEY%
 ) > "%SCRIPT_DIR%.env"
+
+REM Restrict the .env (contains SECRET_KEY + ACCESS_CODE) to the current user only.
+icacls "%SCRIPT_DIR%.env" /inheritance:r /grant:r "%USERNAME%:F" >nul
 
 REM Create start script
 (
@@ -93,7 +104,7 @@ REM Create Windows Task Scheduler XML for auto-start (optional)
 echo.
 set /p AUTO_START="Start server automatically on login? [y/N]: "
 if /i "%AUTO_START%"=="y" (
-    schtasks /create /tn "PictureViewerServer" /tr "\"%VENV_DIR%\Scripts\python.exe\" \"%SCRIPT_DIR%server.py\"" /sc onlogon /rl highest /f >nul 2>nul
+    schtasks /create /tn "PictureViewerServer" /tr "\"%VENV_DIR%\Scripts\python.exe\" \"%SCRIPT_DIR%server.py\"" /sc onlogon /f >nul 2>nul
     echo Server registered as startup task.
 )
 

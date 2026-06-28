@@ -42,6 +42,15 @@ def save_config(cfg):
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w") as f:
         json.dump(cfg, f, indent=2)
+    # config.json holds the secret key + access code — restrict it to the
+    # current user only so other local accounts can't read the secrets.
+    try:
+        import subprocess
+        subprocess.run(
+            ["icacls", CONFIG_FILE, "/inheritance:r", "/grant:r", f"{os.getlogin()}:F"],
+            capture_output=True)
+    except Exception:
+        pass
 
 
 def get_local_ip():
@@ -114,7 +123,7 @@ class SetupWizard:
         # Access code
         tk.Label(frame, text="Access Code:", font=("Helvetica", 10, "bold"),
                  bg=bg, fg=fg, anchor="w").pack(fill="x")
-        self.code_var = tk.StringVar(value="picture123")
+        self.code_var = tk.StringVar(value="")
         tk.Entry(frame, textvariable=self.code_var, font=("Helvetica", 10),
                  bg=entry_bg, fg=fg, insertbackground=fg, relief="flat", bd=4
                  ).pack(fill="x", pady=(2, 12))
@@ -155,8 +164,12 @@ class SetupWizard:
         if not port.isdigit():
             messagebox.showerror("Error", "Port must be a number")
             return
-        if not code:
-            messagebox.showerror("Error", "Please enter an access code")
+        # Require a strong, non-default access code. A short or well-known code
+        # is trivially brute-forced on a LAN, and the server refuses the default.
+        if not code or len(code) < 8 or code == "picture123":
+            messagebox.showerror(
+                "Error",
+                "Access code must be at least 8 characters and not 'picture123'.")
             return
 
         os.makedirs(folder, exist_ok=True)
@@ -194,7 +207,7 @@ def add_autostart():
         exe_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
         subprocess.run([
             "schtasks", "/create", "/tn", "PictureViewerServer",
-            "/tr", f'"{exe_path}"', "/sc", "onlogon", "/rl", "highest", "/f"
+            "/tr", f'"{exe_path}"', "/sc", "onlogon", "/f"
         ], capture_output=True)
     except Exception:
         pass

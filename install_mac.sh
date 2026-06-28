@@ -44,20 +44,32 @@ echo ""
 
 read -p "Media folder path [~/Pictures]: " MEDIA_FOLDER
 MEDIA_FOLDER="${MEDIA_FOLDER:-$HOME/Pictures}"
-MEDIA_FOLDER=$(eval echo "$MEDIA_FOLDER")
+# Expand a leading ~ to $HOME WITHOUT eval (eval would execute $(...)/backticks
+# embedded in the path — a command-injection hole).
+MEDIA_FOLDER="${MEDIA_FOLDER/#\~/$HOME}"
 
 read -p "Server port [8500]: " PORT
 PORT="${PORT:-8500}"
 
-read -p "Access code [picture123]: " ACCESS_CODE
-ACCESS_CODE="${ACCESS_CODE:-picture123}"
+# Require a strong, non-default access code. The server refuses to start with
+# the well-known default, and a short code is trivially brute-forced on a LAN.
+while :; do
+    read -p "Choose an access code (8+ characters, not 'picture123'): " ACCESS_CODE
+    if [ "${#ACCESS_CODE}" -ge 8 ] && [ "$ACCESS_CODE" != "picture123" ]; then
+        break
+    fi
+    echo "  -> Code must be at least 8 characters and not the default. Try again."
+done
 
-# Create .env file
-cat > "$SCRIPT_DIR/.env" <<EOL
+# Create .env file with the secret key and access code. umask 177 makes it
+# owner-read/write only (0600) so other local users can't read the secrets.
+( umask 177; cat > "$SCRIPT_DIR/.env" <<EOL
 PICTUREVIEWER_MEDIA_FOLDER=$MEDIA_FOLDER
 PICTUREVIEWER_ACCESS_CODE=$ACCESS_CODE
 PICTUREVIEWER_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 EOL
+)
+chmod 600 "$SCRIPT_DIR/.env"
 
 # Update port in config if changed
 if [ "$PORT" != "8500" ]; then
@@ -69,7 +81,7 @@ cat > "$SCRIPT_DIR/start_server.command" <<EOL
 #!/bin/bash
 cd "$SCRIPT_DIR"
 source "$VENV_DIR/bin/activate"
-export \$(cat .env | xargs)
+set -a; . "$SCRIPT_DIR/.env"; set +a
 python3 server.py
 EOL
 chmod +x "$SCRIPT_DIR/start_server.command"
@@ -112,6 +124,7 @@ if [[ "$AUTO_START" =~ ^[Yy]$ ]]; then
 </dict>
 </plist>
 EOL
+    chmod 600 "$PLIST_PATH"  # contains the access code — owner-only
     launchctl load "$PLIST_PATH" 2>/dev/null || true
     echo "Server registered as login item."
 fi
@@ -140,6 +153,6 @@ echo ""
 read -p "Start the server now? [Y/n]: " START_NOW
 if [[ ! "$START_NOW" =~ ^[Nn]$ ]]; then
     source "$VENV_DIR/bin/activate"
-    export $(cat "$SCRIPT_DIR/.env" | xargs)
+    set -a; . "$SCRIPT_DIR/.env"; set +a
     python3 "$SCRIPT_DIR/server.py"
 fi

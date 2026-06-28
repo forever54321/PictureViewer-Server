@@ -60,7 +60,7 @@ class SetupWizard:
         # Access code
         tk.Label(frame, text="Access Code:", font=("SF Pro Display", 10, "bold"),
                  bg=bg, fg=fg, anchor="w").pack(fill="x")
-        self.code_var = tk.StringVar(value="picture123")
+        self.code_var = tk.StringVar(value="")
         tk.Entry(frame, textvariable=self.code_var, font=("SF Mono", 10),
                  bg=entry_bg, fg=fg, insertbackground=fg, relief="flat", bd=4
                  ).pack(fill="x", pady=(2, 14))
@@ -87,8 +87,15 @@ class SetupWizard:
         port = self.port_var.get().strip()
         code = self.code_var.get().strip()
 
-        if not folder or not port.isdigit() or not code:
+        if not folder or not port.isdigit():
             messagebox.showerror("Error", "Please fill in all fields correctly.")
+            return
+        # Require a strong, non-default access code. A short or well-known code
+        # is trivially brute-forced on a LAN, and the server refuses the default.
+        if not code or len(code) < 8 or code == "picture123":
+            messagebox.showerror(
+                "Error",
+                "Access code must be at least 8 characters and not 'picture123'.")
             return
 
         os.makedirs(folder, exist_ok=True)
@@ -103,6 +110,10 @@ class SetupWizard:
 
         with open(CONFIG_FILE, "w") as f:
             json.dump(config, f, indent=2)
+        # config.json holds the secret key + access code — lock it down so other
+        # local users can't read it.
+        os.chmod(CONFIG_FILE, 0o600)
+        os.chmod(APP_SUPPORT, 0o700)
 
         # Register LaunchAgent if requested
         if self.autostart_var.get():
@@ -155,6 +166,8 @@ class SetupWizard:
 
             with open(plist_path, "w") as f:
                 f.write(plist_content)
+            # The plist inlines the access code + secret key — owner-only.
+            os.chmod(plist_path, 0o600)
 
             os.system(f"launchctl load '{plist_path}' 2>/dev/null")
         except Exception:

@@ -53,13 +53,20 @@ echo ""
 
 read -p "Media folder path [$HOME/Pictures]: " MEDIA_FOLDER
 MEDIA_FOLDER="${MEDIA_FOLDER:-$HOME/Pictures}"
-MEDIA_FOLDER=$(eval echo "$MEDIA_FOLDER")
+# Expand a leading ~ to $HOME WITHOUT eval (eval would execute $(...)/backticks
+# embedded in the path — a command-injection hole).
+MEDIA_FOLDER="${MEDIA_FOLDER/#\~/$HOME}"
 
 read -p "Server port [8500]: " PORT
 PORT="${PORT:-8500}"
 
-read -p "Access code [picture123]: " ACCESS_CODE
-ACCESS_CODE="${ACCESS_CODE:-picture123}"
+# Require a strong, non-default access code. The server refuses to start with
+# the well-known default, and a short code is trivially brute-forced on a LAN.
+while :; do
+    read -rp "Choose an access code (8+ characters, not 'picture123'): " ACCESS_CODE
+    if [ "${#ACCESS_CODE}" -ge 8 ] && [ "$ACCESS_CODE" != "picture123" ]; then break; fi
+    echo "  -> Code must be at least 8 characters and not the default. Try again."
+done
 
 # Create media folder if needed
 mkdir -p "$MEDIA_FOLDER"
@@ -67,12 +74,15 @@ mkdir -p "$MEDIA_FOLDER"
 # Generate secret key
 SECRET_KEY=$("$VENV_DIR/bin/python3" -c "import secrets; print(secrets.token_hex(32))")
 
-# Create .env file
-cat > "$SCRIPT_DIR/.env" <<EOL
+# Create .env file. umask 177 makes it owner-read/write only (0600) so other
+# local users can't read the secret key and access code.
+( umask 177; cat > "$SCRIPT_DIR/.env" <<EOL
 PICTUREVIEWER_MEDIA_FOLDER=$MEDIA_FOLDER
 PICTUREVIEWER_ACCESS_CODE=$ACCESS_CODE
 PICTUREVIEWER_SECRET_KEY=$SECRET_KEY
 EOL
+)
+chmod 600 "$SCRIPT_DIR/.env"
 
 # Update port if changed
 if [ "$PORT" != "8500" ]; then
@@ -83,7 +93,7 @@ fi
 cat > "$SCRIPT_DIR/start_server.sh" <<EOL
 #!/bin/bash
 cd "$SCRIPT_DIR"
-export \$(grep -v '^#' .env | xargs)
+set -a; . "$SCRIPT_DIR/.env"; set +a
 "$VENV_DIR/bin/python3" server.py
 EOL
 chmod +x "$SCRIPT_DIR/start_server.sh"
@@ -94,6 +104,8 @@ read -p "Install as systemd service (auto-start on boot)? [y/N]: " INSTALL_SERVI
 
 if [[ "$INSTALL_SERVICE" =~ ^[Yy]$ ]]; then
     SERVICE_FILE="/etc/systemd/system/pictureviewer.service"
+    # Load secrets from the 0600 .env via EnvironmentFile instead of inlining
+    # them as Environment= lines (which are world-readable via systemctl show).
     sudo tee "$SERVICE_FILE" > /dev/null <<EOL
 [Unit]
 Description=PictureViewer Server
@@ -103,9 +115,7 @@ After=network.target
 Type=simple
 User=$USER
 WorkingDirectory=$SCRIPT_DIR
-Environment=PICTUREVIEWER_MEDIA_FOLDER=$MEDIA_FOLDER
-Environment=PICTUREVIEWER_ACCESS_CODE=$ACCESS_CODE
-Environment=PICTUREVIEWER_SECRET_KEY=$SECRET_KEY
+EnvironmentFile=$SCRIPT_DIR/.env
 ExecStart=$VENV_DIR/bin/python3 $SCRIPT_DIR/server.py
 Restart=on-failure
 RestartSec=5
@@ -113,6 +123,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOL
+    sudo chmod 600 "$SERVICE_FILE"
 
     sudo systemctl daemon-reload
     sudo systemctl enable pictureviewer
@@ -161,6 +172,6 @@ echo ""
 # Start now?
 read -p "Start the server now? [Y/n]: " START_NOW
 if [[ ! "$START_NOW" =~ ^[Nn]$ ]]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+    set -a; . "$SCRIPT_DIR/.env"; set +a
     "$VENV_DIR/bin/python3" "$SCRIPT_DIR/server.py"
 fi

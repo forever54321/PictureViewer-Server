@@ -4,3 +4,7 @@ __pycache__/
 .env
 .thumbnails/
 *.log
+
+# certs / keys (generated at runtime — never commit)
+certs/
+*.pem

@@ -167,6 +167,46 @@ def get_root_path(name: str) -> str | None:
     return next(iter(roots.values()), config.MEDIA_FOLDER)
 
 
+# Magic-byte signatures keyed by file extension. The check is "first N bytes
+# of file START WITH any of these" — so this only accepts genuine image/video
+# headers. Extensions in IMAGE_EXTENSIONS / VIDEO_EXTENSIONS without an entry
+# here are accepted with extension-only validation (caller's risk to expand).
+_MAGIC_BYTES: dict[str, tuple[bytes, ...]] = {
+    ".jpg":  (b"\xff\xd8\xff",),
+    ".jpeg": (b"\xff\xd8\xff",),
+    ".png":  (b"\x89PNG\r\n\x1a\n",),
+    ".gif":  (b"GIF87a", b"GIF89a"),
+    ".bmp":  (b"BM",),
+    ".webp": (b"RIFF",),  # followed by 4-byte size, then "WEBP"
+    ".heic": (b"\x00\x00\x00",),  # ftypheic at offset 4 — see deeper check below
+    ".heif": (b"\x00\x00\x00",),
+    ".tif":  (b"II*\x00", b"MM\x00*"),
+    ".tiff": (b"II*\x00", b"MM\x00*"),
+    ".mp4":  (b"\x00\x00\x00",),  # ftypmp4 at offset 4
+    ".m4v":  (b"\x00\x00\x00",),
+    ".mov":  (b"\x00\x00\x00",),  # ftypqt at offset 4
+    ".webm": (b"\x1aE\xdf\xa3",),
+    ".mkv":  (b"\x1aE\xdf\xa3",),
+    ".avi":  (b"RIFF",),  # followed by 4-byte size, then "AVI "
+    ".wmv":  (b"\x30\x26\xb2\x75",),
+}
+
+
+def _content_matches_extension(path: Path, ext: str) -> bool:
+    sigs = _MAGIC_BYTES.get(ext.lower())
+    if not sigs:
+        # No signature on file for this extension — accept (caller used the
+        # extension allowlist; this function is the second line of defense
+        # only for types we have a signature for).
+        return True
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(16)
+    except OSError:
+        return False
+    return any(head.startswith(s) for s in sigs)
+
+
 def _is_within(target: Path, base: Path) -> bool:
     """True only if `target` is `base` itself or a descendant of it.
 
@@ -585,6 +625,18 @@ def upload_file():
         file.save(str(dest))
     except Exception as e:
         return jsonify({"error": f"Save failed: {str(e)}"}), 500
+
+    # Magic-byte validation: defense-in-depth against extension spoofing. The
+    # extension allowlist above lets through anything *named* .jpg / .mp4, even
+    # if its content is something else (e.g. a renamed binary). Sniff the first
+    # 16 bytes against known image/video signatures; on mismatch, delete and
+    # reject.
+    if not _content_matches_extension(dest, ext):
+        try:
+            dest.unlink()
+        except Exception:
+            pass
+        return jsonify({"error": f"File content doesn't match extension {ext}"}), 400
 
     return jsonify({
         "success": True,

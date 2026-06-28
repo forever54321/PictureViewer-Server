@@ -26,6 +26,13 @@ ALL_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 # Authentication
 SECRET_KEY = os.environ.get("PICTUREVIEWER_SECRET_KEY", secrets.token_hex(32))
 ACCESS_CODE = os.environ.get("PICTUREVIEWER_ACCESS_CODE", "picture123")
+# Refuse to run with the well-known default; LAN attackers will try it first.
+# Override via PICTUREVIEWER_ACCESS_CODE env var or config.json.
+if ACCESS_CODE == "picture123":
+    raise RuntimeError(
+        "Refusing to start: PICTUREVIEWER_ACCESS_CODE is the default 'picture123'. "
+        "Set the PICTUREVIEWER_ACCESS_CODE env var to a strong value before launch."
+    )
 TOKEN_EXPIRY_HOURS = 720  # 30 days
 
 # Upload settings
