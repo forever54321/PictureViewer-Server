@@ -287,6 +287,6 @@ ssh -N -L 0.0.0.0:8500:home-pc-ip:8500 username@your-public-ip
 
 - **Never** expose PictureViewer Server directly to the internet without a VPN/tunnel
 - **Never** use port forwarding for the server port (8500) — use a VPN instead
-- **Always** use a strong, unique access code
+- **Always** use a strong, unique access code — **at least 12 characters** with a lowercase letter, an uppercase letter, a number, and a special character (the server enforces this and refuses to start with a weaker code)
 - **Keep** your server software updated
 - Consider using a **firewall** to restrict which IPs can access the server
