@@ -28,6 +28,11 @@ sys.path.insert(0, BUNDLE_DIR)
 
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "PictureViewer")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+
+
+def _code_ok(code):
+    return (len(code) >= 12 and any(c.islower() for c in code) and any(c.isupper() for c in code)
+            and any(c.isdigit() for c in code) and any((not c.isalnum()) and (not c.isspace()) for c in code))
 THUMB_DIR = os.path.join(CONFIG_DIR, "thumbnails")
 
 
@@ -164,12 +169,13 @@ class SetupWizard:
         if not port.isdigit():
             messagebox.showerror("Error", "Port must be a number")
             return
-        # Require a strong, non-default access code. A short or well-known code
-        # is trivially brute-forced on a LAN, and the server refuses the default.
-        if not code or len(code) < 8 or code == "picture123":
+        # Require a strong access code. A short or simple code is trivially
+        # brute-forced on a LAN, and the server refuses weak defaults.
+        if not _code_ok(code):
             messagebox.showerror(
                 "Error",
-                "Access code must be at least 8 characters and not 'picture123'.")
+                "Access code must be at least 12 characters and include a lowercase "
+                "letter, an uppercase letter, a number, and a special character.")
             return
 
         os.makedirs(folder, exist_ok=True)

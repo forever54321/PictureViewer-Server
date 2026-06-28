@@ -15,6 +15,8 @@ Download the pre-built installer for your computer from the **[Releases page →
 
 That's it — no Python, no terminal, no `pip`. The setup wizard asks for your photo folder and an access code, then shows the URL/code to type into the iPhone app.
 
+> **Access code requirements:** the code that connects the app to your server must be **at least 12 characters** and include a **lowercase letter, an uppercase letter, a number, and a special character** (e.g. `Sunset#Beach2026`). The server refuses to start with a weaker code.
+
 After it's running, the status window has a **Manage Folders…** button so you can add multiple folders that the iPhone can switch between.
 
 ---

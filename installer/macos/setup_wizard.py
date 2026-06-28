@@ -13,6 +13,11 @@ APP_SUPPORT = os.path.expanduser("~/Library/Application Support/PictureViewer")
 CONFIG_FILE = os.path.join(APP_SUPPORT, "config.json")
 
 
+def _code_ok(code):
+    return (len(code) >= 12 and any(c.islower() for c in code) and any(c.isupper() for c in code)
+            and any(c.isdigit() for c in code) and any((not c.isalnum()) and (not c.isspace()) for c in code))
+
+
 class SetupWizard:
     def __init__(self):
         self.root = tk.Tk()
@@ -90,12 +95,13 @@ class SetupWizard:
         if not folder or not port.isdigit():
             messagebox.showerror("Error", "Please fill in all fields correctly.")
             return
-        # Require a strong, non-default access code. A short or well-known code
-        # is trivially brute-forced on a LAN, and the server refuses the default.
-        if not code or len(code) < 8 or code == "picture123":
+        # Require a strong access code. A short or simple code is trivially
+        # brute-forced on a LAN, and the server refuses weak defaults.
+        if not _code_ok(code):
             messagebox.showerror(
                 "Error",
-                "Access code must be at least 8 characters and not 'picture123'.")
+                "Access code must be at least 12 characters and include a lowercase "
+                "letter, an uppercase letter, a number, and a special character.")
             return
 
         os.makedirs(folder, exist_ok=True)

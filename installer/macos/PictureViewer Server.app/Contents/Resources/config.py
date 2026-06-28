@@ -26,12 +26,39 @@ ALL_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 # Authentication
 SECRET_KEY = os.environ.get("PICTUREVIEWER_SECRET_KEY", secrets.token_hex(32))
 ACCESS_CODE = os.environ.get("PICTUREVIEWER_ACCESS_CODE", "picture123")
-# Refuse to run with the well-known default; LAN attackers will try it first.
-# Override via PICTUREVIEWER_ACCESS_CODE env var or config.json.
-if ACCESS_CODE == "picture123":
+
+
+def validate_access_code(code: str):
+    """Enforce the access-code policy. Returns None if OK, else a short reason.
+
+    Policy: at least 12 characters AND at least one lowercase letter, one
+    uppercase letter, one number, and one special (non-alphanumeric) character.
+    This is the credential used to connect to the server and upload photos, so
+    it must resist brute-forcing by anyone on the network.
+    """
+    if len(code) < 12:
+        return "at least 12 characters long"
+    if not any(c.islower() for c in code):
+        return "at least one lowercase letter"
+    if not any(c.isupper() for c in code):
+        return "at least one uppercase letter"
+    if not any(c.isdigit() for c in code):
+        return "at least one number"
+    if not any((not c.isalnum()) and (not c.isspace()) for c in code):
+        return "at least one special character (e.g. ! ? # $ %)"
+    return None
+
+
+# Refuse to start with an access code that doesn't meet the policy (this also
+# rejects the old default 'picture123'). Enforced here so the rule holds no
+# matter how the code was supplied — installer, env var, or config.json.
+_code_problem = validate_access_code(ACCESS_CODE)
+if _code_problem:
     raise RuntimeError(
-        "Refusing to start: PICTUREVIEWER_ACCESS_CODE is the default 'picture123'. "
-        "Set the PICTUREVIEWER_ACCESS_CODE env var to a strong value before launch."
+        "Refusing to start: the access code does not meet the security policy "
+        f"(it must contain {_code_problem}). Choose a code of at least 12 "
+        "characters with lowercase, uppercase, a number, and a special "
+        "character, then set PICTUREVIEWER_ACCESS_CODE (or run setup again)."
     )
 TOKEN_EXPIRY_HOURS = 720  # 30 days
 

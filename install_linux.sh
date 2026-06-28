@@ -63,9 +63,15 @@ PORT="${PORT:-8500}"
 # Require a strong, non-default access code. The server refuses to start with
 # the well-known default, and a short code is trivially brute-forced on a LAN.
 while :; do
-    read -rp "Choose an access code (8+ characters, not 'picture123'): " ACCESS_CODE
-    if [ "${#ACCESS_CODE}" -ge 8 ] && [ "$ACCESS_CODE" != "picture123" ]; then break; fi
-    echo "  -> Code must be at least 8 characters and not the default. Try again."
+    read -rp "Choose an access code (12+ chars: lowercase, UPPERCASE, number, special): " ACCESS_CODE
+    if [ "${#ACCESS_CODE}" -ge 12 ] \
+       && printf '%s' "$ACCESS_CODE" | grep -q '[a-z]' \
+       && printf '%s' "$ACCESS_CODE" | grep -q '[A-Z]' \
+       && printf '%s' "$ACCESS_CODE" | grep -q '[0-9]' \
+       && printf '%s' "$ACCESS_CODE" | grep -q '[^a-zA-Z0-9]'; then
+        break
+    fi
+    echo "  -> Must be 12+ characters with a lowercase letter, an uppercase letter, a number, and a special character."
 done
 
 # Create media folder if needed

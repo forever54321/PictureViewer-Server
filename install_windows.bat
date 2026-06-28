@@ -69,11 +69,11 @@ REM Ask for a strong, non-default access code. A short or well-known code is
 REM trivially brute-forced on a LAN, and the server refuses the default.
 :get_access_code
 set "ACCESS_CODE="
-set /p ACCESS_CODE="Choose an access code (8+ characters, not 'picture123'): "
+set /p ACCESS_CODE="Choose an access code (12+ chars: lowercase, UPPERCASE, number, special): "
 set "CODE_OK="
-for /f %%v in ('powershell -NoProfile -Command "if ($env:ACCESS_CODE.Length -ge 8 -and $env:ACCESS_CODE -ne 'picture123') { 'ok' }"') do set "CODE_OK=%%v"
+for /f %%v in ('powershell -NoProfile -Command "if ($env:ACCESS_CODE.Length -ge 12 -and $env:ACCESS_CODE -cmatch '[a-z]' -and $env:ACCESS_CODE -cmatch '[A-Z]' -and $env:ACCESS_CODE -match '\d' -and $env:ACCESS_CODE -match '[^a-zA-Z0-9]') { 'ok' }"') do set "CODE_OK=%%v"
 if not "%CODE_OK%"=="ok" (
-    echo   -^> Code must be at least 8 characters and not the default. Try again.
+    echo   -^> Must be 12+ characters with a lowercase letter, an uppercase letter, a number, and a special character. Try again.
     goto get_access_code
 )
 

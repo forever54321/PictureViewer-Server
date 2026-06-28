@@ -150,10 +150,10 @@ if ([string]::IsNullOrWhiteSpace($port)) { $port = "8500" }
 # Require a strong, non-default access code. A short or well-known code is
 # trivially brute-forced on a LAN, and the server refuses the default.
 do {
-    $accessCode = Read-Host "  Choose an access code (8+ characters, not 'picture123')"
-    if ($accessCode.Length -ge 8 -and $accessCode -ne 'picture123') { break }
-    Write-Host "  -> Code must be at least 8 characters and not the default. Try again." -ForegroundColor Yellow
-} while ($true)
+    $accessCode = Read-Host "  Choose an access code (12+ chars: lowercase, UPPERCASE, number, special)"
+    $valid = $accessCode.Length -ge 12 -and $accessCode -cmatch '[a-z]' -and $accessCode -cmatch '[A-Z]' -and $accessCode -match '\d' -and $accessCode -match '[^a-zA-Z0-9]'
+    if (-not $valid) { Write-Host "  Must be 12+ characters with a lowercase, uppercase, number, and special character." -ForegroundColor Yellow }
+} while (-not $valid)
 
 # Generate secret key
 $secretKey = & $venvPython -c "import secrets; print(secrets.token_hex(32))"
