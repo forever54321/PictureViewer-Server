@@ -454,6 +454,11 @@ def status():
         "https_port": _runtime.get("https_port"),
         "https_available": _runtime.get("https_port") is not None,
         "tls_fingerprint": cert_fingerprint(),
+        # Capability flag: this server accepts streamed raw-body uploads
+        # (X-Upload-* headers). The app uses them to avoid writing a second
+        # on-disk copy of large videos; older servers omit this and the app
+        # falls back to multipart.
+        "raw_upload": True,
         "roots": [
             {
                 "name": n,
@@ -581,24 +586,35 @@ def get_thumbnail():
 @app.route("/api/upload", methods=["POST"])
 @token_required
 def upload_file():
-    subfolder = request.form.get("path", "")
-    root_name = request.form.get("root", "")
+    # Two upload modes:
+    #  * multipart/form-data (legacy) — fields: path, root, file
+    #  * raw body (streamed) — the request body IS the file bytes, with metadata
+    #    in X-Upload-* headers. The iOS app uses this for photos/videos so it can
+    #    stream straight from disk to the network without writing a second
+    #    multipart copy of large videos (which tripped the OS disk-write limit).
+    from urllib.parse import unquote
+    raw_mode = "file" not in request.files
+    if raw_mode:
+        subfolder = unquote(request.headers.get("X-Upload-Path", ""))
+        root_name = unquote(request.headers.get("X-Upload-Root", ""))
+        client_name = unquote(request.headers.get("X-Upload-Filename", ""))
+    else:
+        subfolder = request.form.get("path", "")
+        root_name = request.form.get("root", "")
+        client_name = request.files["file"].filename or ""
+
     folder = safe_path(subfolder, root_name)
 
     if not folder.is_dir():
         os.makedirs(folder, exist_ok=True)
 
-    if "file" not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-
-    file = request.files["file"]
-    if not file.filename:
+    if not client_name:
         return jsonify({"error": "Empty filename"}), 400
 
     # Sanitize the client-supplied filename. werkzeug.secure_filename strips
     # directory separators and ".." so a malicious filename like
     # "../../../../etc/cron.d/evil" can't escape the upload folder.
-    safe_name = secure_filename(file.filename)
+    safe_name = secure_filename(client_name)
     if not safe_name:
         return jsonify({"error": "Invalid filename"}), 400
 
@@ -622,7 +638,17 @@ def upload_file():
         abort(403, description="Resolved upload path is outside the shared folder")
 
     try:
-        file.save(str(dest))
+        if raw_mode:
+            # Stream the request body straight to disk in chunks — never buffer
+            # the whole (possibly multi-GB) upload in server memory.
+            with open(dest, "wb") as out:
+                while True:
+                    chunk = request.stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+        else:
+            request.files["file"].save(str(dest))
     except Exception as e:
         return jsonify({"error": f"Save failed: {str(e)}"}), 500
 
