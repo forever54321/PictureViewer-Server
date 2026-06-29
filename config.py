@@ -2,6 +2,19 @@ import os
 import secrets
 from pathlib import Path
 
+# Load the .env that the installer wrote (PICTUREVIEWER_* settings) from the
+# folder this file lives in — BEFORE reading any of those values below. This
+# makes the server pick up its media folder / access code / secret no matter how
+# it was launched (start script, double-click, or a Windows auto-start task that
+# runs with a different working directory and no inherited environment). Without
+# this, those launch methods would fall back to the default access code, which
+# the policy check below rejects — so the server would exit immediately.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except Exception:
+    pass
+
 # Server Configuration
 HOST = "0.0.0.0"
 PORT = 8500              # plain HTTP (kept during the HTTPS transition)

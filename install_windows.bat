@@ -80,22 +80,25 @@ if not "%CODE_OK%"=="ok" (
 REM Generate secret key
 for /f %%i in ('python -c "import secrets; print(secrets.token_hex(32))"') do set SECRET_KEY=%%i
 
-REM Create .env file
-(
-echo PICTUREVIEWER_MEDIA_FOLDER=%MEDIA_FOLDER%
-echo PICTUREVIEWER_ACCESS_CODE=%ACCESS_CODE%
-echo PICTUREVIEWER_SECRET_KEY=%SECRET_KEY%
-) > "%SCRIPT_DIR%.env"
+REM Put the values in the environment first (quoted SET keeps special characters
+REM like # $ ! & intact), then write .env with Python — NOT with `echo`, because
+REM echo would let characters such as & < > | corrupt the file or run as
+REM commands, leaving a broken access code that makes the server refuse to start.
+set "PICTUREVIEWER_MEDIA_FOLDER=%MEDIA_FOLDER%"
+set "PICTUREVIEWER_ACCESS_CODE=%ACCESS_CODE%"
+set "PICTUREVIEWER_SECRET_KEY=%SECRET_KEY%"
+"%VENV_DIR%\Scripts\python.exe" -c "import os; open(os.path.join(r'%SCRIPT_DIR%', '.env'), 'w', encoding='utf-8').write(''.join('%%s=%%s\n' %% (k, os.environ[k]) for k in ('PICTUREVIEWER_MEDIA_FOLDER','PICTUREVIEWER_ACCESS_CODE','PICTUREVIEWER_SECRET_KEY')))"
 
 REM Restrict the .env (contains SECRET_KEY + ACCESS_CODE) to the current user only.
 icacls "%SCRIPT_DIR%.env" /inheritance:r /grant:r "%USERNAME%:F" >nul
 
-REM Create start script
+REM Create start script. The server reads .env itself (see config.py), so the
+REM start script just needs to run it from this folder — no fragile batch
+REM parsing of the .env values (which would choke on special characters).
 (
 echo @echo off
 echo cd /d "%SCRIPT_DIR%"
 echo call "%VENV_DIR%\Scripts\activate.bat"
-echo for /f "tokens=1,2 delims==" %%%%a in ^(.env^) do set "%%%%a=%%%%b"
 echo python server.py
 echo pause
 ) > "%SCRIPT_DIR%start_server.bat"

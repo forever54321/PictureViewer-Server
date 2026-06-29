@@ -462,7 +462,7 @@ def organize_existing(base_path: str):
     base = Path(base_path).resolve()
     if not base.is_dir():
         return (0, 0)
-    moved = skipped = 0
+    moved = skipped = seen = 0
     for dirpath, dirnames, filenames in os.walk(base):
         # Don't descend into hidden/system dirs (.thumbnails, .incoming, certs…)
         dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "certs"]
@@ -476,6 +476,10 @@ def organize_existing(base_path: str):
             ext = src.suffix.lower()
             if not (_is_video_ext(ext) or _is_image_ext(ext)):
                 continue
+            seen += 1
+            # Heartbeat so a large library doesn't look frozen at startup.
+            if seen % 200 == 0:
+                print(f"    …{seen} files checked, {moved} organized so far", flush=True)
             if _is_already_organized(src, base):
                 skipped += 1
                 continue
@@ -491,13 +495,15 @@ def organize_existing(base_path: str):
 def organize_all_roots():
     if not getattr(config, "AUTO_ORGANIZE", True):
         return
+    print("  Organizing your library into Pictures/Videos by year and month…")
+    print("  (the first run can take a few minutes for large folders)")
     for name, path in get_roots().items():
         try:
             moved, skipped = organize_existing(path)
-            if moved:
-                print(f"  Organized {moved} existing file(s) in '{name}'.")
+            print(f"  '{name}': {moved} file(s) organized, {skipped} already in place.")
         except Exception as e:
             sys.stderr.write(f"  Could not organize root '{name}': {e}\n")
+    print("  Organize pass complete.\n", flush=True)
 
 
 # ---------------------------------------------------------------------------
