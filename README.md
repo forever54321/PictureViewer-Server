@@ -24,11 +24,11 @@ After it's running, the status window has a **Manage Folders…** button so you 
 The server automatically sorts your photos and videos into a tidy structure:
 
 ```
-Pictures/2026/June/IMG_0001.jpg
-Videos/2026/June/VID_0001.mov
+Photos/2026/01-January/IMG_0001.jpg
+Videos/2026/01-January/VID_0001.mov
 ```
 
-- Photos go under **`Pictures/<Year>/<Month>/`**, videos under **`Videos/<Year>/<Month>/`**.
+- Photos go under **`Photos/<Year>/<MM-Month>/`**, videos under **`Videos/<Year>/<MM-Month>/`** (month folders are named like `01-January`, `02-February`, … so they sort in order).
 - The date comes from the photo's EXIF capture date / the video's metadata, falling back to the filename date, then the file's modified time.
 - This runs on every uploaded file, **and** once at startup it sorts any loose files already sitting in your shared folder (existing files are only ever *moved*, never deleted, and never overwritten — name clashes get a `_1`, `_2` suffix).
 

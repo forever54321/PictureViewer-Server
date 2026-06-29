@@ -244,7 +244,7 @@ def relative_to_root(target: Path, root_name: str) -> str:
 
 # ---------------------------------------------------------------------------
 # Automatic organization — sort uploads (and any loose existing media) into
-#   <root>/Pictures/<Year>/<MonthName>/      for photos
+#   <root>/Photos/<Year>/<MM-Month>/         for photos  (e.g. 2026/01-January)
 #   <root>/Videos/<Year>/<MonthName>/        for videos
 # The folder components are derived ONLY from the file's capture date and a
 # fixed media-type label, never from client input, so there is no path-
@@ -254,7 +254,7 @@ def relative_to_root(target: Path, root_name: str) -> str:
 import re as _re
 
 _EXTRA_VIDEO_EXTS = {".3gp", ".flv", ".ts", ".mts", ".m2ts"}
-_TOP_FOLDERS = ("Pictures", "Videos")
+_TOP_FOLDERS = ("Photos", "Videos")
 _MONTH_NAMES = {
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -467,8 +467,9 @@ def _capture_date(path: Path, ext: str, hint_name: str = ""):
 
 
 def _organized_subpath(date, is_video: bool) -> Path:
-    top = "Videos" if is_video else "Pictures"
-    return Path(top) / str(date.year) / date.strftime("%B")
+    top = "Videos" if is_video else "Photos"
+    month = "%02d-%s" % (date.month, date.strftime("%B"))   # e.g. "01-January"
+    return Path(top) / str(date.year) / month
 
 
 def _unique_dest(folder: Path, safe_name: str) -> Path:
@@ -516,7 +517,7 @@ def _is_already_organized(src: Path, base: Path) -> bool:
         return False
     return (parts[0] in _TOP_FOLDERS
             and bool(_re.fullmatch(r"20\d{2}", parts[1]))
-            and parts[2] in _MONTH_NAMES)
+            and bool(_re.fullmatch(r"(0[1-9]|1[0-2])-[A-Za-z]+", parts[2])))
 
 
 def organize_existing(base_path: str):
@@ -581,7 +582,7 @@ def organize_existing(base_path: str):
 def organize_all_roots():
     if not getattr(config, "AUTO_ORGANIZE", True):
         return
-    print("  Organizing your library into Pictures/Videos by year and month…")
+    print("  Organizing your library into Photos/Videos by year and month…")
     print("  (the first run can take a few minutes for large folders)")
     for name, path in get_roots().items():
         try:

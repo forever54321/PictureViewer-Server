@@ -80,8 +80,8 @@ MAX_UPLOAD_SIZE_MB = 10240  # 10GB max
 
 # Automatic organization. When True, uploaded files (and any loose existing
 # files found at startup) are sorted into:
-#     Pictures/<Year>/<MonthName>/    e.g. Pictures/2026/June/
-#     Videos/<Year>/<MonthName>/      e.g. Videos/2026/June/
+#     Photos/<Year>/<MM-Month>/    e.g. Photos/2026/01-January/
+#     Videos/<Year>/<MM-Month>/    e.g. Videos/2026/01-January/
 # The date is taken from the photo's EXIF / the video's metadata, falling back
 # to the filename date, then the file's modified time. Set to False to keep
 # uploads in the folder the app chose instead.
