@@ -19,6 +19,21 @@ That's it — no Python, no terminal, no `pip`. The setup wizard asks for your p
 
 After it's running, the status window has a **Manage Folders…** button so you can add multiple folders that the iPhone can switch between.
 
+### Automatic organization
+
+The server automatically sorts your photos and videos into a tidy structure:
+
+```
+Pictures/2026/June/IMG_0001.jpg
+Videos/2026/June/VID_0001.mov
+```
+
+- Photos go under **`Pictures/<Year>/<Month>/`**, videos under **`Videos/<Year>/<Month>/`**.
+- The date comes from the photo's EXIF capture date / the video's metadata, falling back to the filename date, then the file's modified time.
+- This runs on every uploaded file, **and** once at startup it sorts any loose files already sitting in your shared folder (existing files are only ever *moved*, never deleted, and never overwritten — name clashes get a `_1`, `_2` suffix).
+
+To turn this off and keep uploads in whatever folder the app chooses, set the environment variable `PICTUREVIEWER_AUTO_ORGANIZE=0` (or edit `AUTO_ORGANIZE = False` in `config.py`).
+
 ---
 
 ## Requirements

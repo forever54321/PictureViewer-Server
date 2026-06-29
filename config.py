@@ -64,3 +64,12 @@ TOKEN_EXPIRY_HOURS = 720  # 30 days
 
 # Upload settings
 MAX_UPLOAD_SIZE_MB = 10240  # 10GB max
+
+# Automatic organization. When True, uploaded files (and any loose existing
+# files found at startup) are sorted into:
+#     Pictures/<Year>/<MonthName>/    e.g. Pictures/2026/June/
+#     Videos/<Year>/<MonthName>/      e.g. Videos/2026/June/
+# The date is taken from the photo's EXIF / the video's metadata, falling back
+# to the filename date, then the file's modified time. Set to False to keep
+# uploads in the folder the app chose instead.
+AUTO_ORGANIZE = os.environ.get("PICTUREVIEWER_AUTO_ORGANIZE", "1") not in ("0", "false", "False", "")

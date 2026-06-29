@@ -32,6 +32,7 @@ import jwt
 
 import config
 
+import shutil
 import tempfile
 
 app = Flask(__name__)
@@ -241,6 +242,265 @@ def relative_to_root(target: Path, root_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Automatic organization — sort uploads (and any loose existing media) into
+#   <root>/Pictures/<Year>/<MonthName>/      for photos
+#   <root>/Videos/<Year>/<MonthName>/        for videos
+# The folder components are derived ONLY from the file's capture date and a
+# fixed media-type label, never from client input, so there is no path-
+# traversal surface here. Filenames are still run through secure_filename.
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_EXTRA_VIDEO_EXTS = {".3gp", ".flv", ".ts", ".mts", ".m2ts"}
+_TOP_FOLDERS = ("Pictures", "Videos")
+_MONTH_NAMES = {
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+}
+_QT_EPOCH = datetime.datetime(1904, 1, 1)
+# Matches 8-digit dates anywhere in a name: 2026-06-29, 20260629, VID_20260629_…
+_FILENAME_DATE_RE = _re.compile(r"(20\d{2})[-_]?(0[1-9]|1[0-2])[-_]?(0[1-9]|[12]\d|3[01])")
+
+
+def _is_video_ext(ext: str) -> bool:
+    ext = ext.lower()
+    return ext in config.VIDEO_EXTENSIONS or ext in _EXTRA_VIDEO_EXTS
+
+
+def _is_image_ext(ext: str) -> bool:
+    return ext.lower() in config.IMAGE_EXTENSIONS
+
+
+def _sane_date(d):
+    """Reject absurd dates so a corrupt EXIF/atom can't create folders like 5921/."""
+    if d is None:
+        return None
+    if d.year < 1990 or d.year > 2100:
+        return None
+    return d
+
+
+def _parse_exif_dt(val):
+    try:
+        s = str(val).strip()
+        return datetime.datetime.strptime(s[:19], "%Y:%m:%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def _exif_date(path: Path):
+    """DateTimeOriginal (or DateTime) from a photo's EXIF, if present."""
+    try:
+        with Image.open(path) as img:
+            exif = img.getexif()
+            if not exif:
+                return None
+            for tag in (36867, 306):  # DateTimeOriginal, DateTime
+                d = _parse_exif_dt(exif.get(tag)) if exif.get(tag) else None
+                if d:
+                    return d
+            try:
+                sub = exif.get_ifd(0x8769)  # Exif sub-IFD
+                for tag in (0x9003, 0x9004):  # DateTimeOriginal, DateTimeDigitized
+                    d = _parse_exif_dt(sub.get(tag)) if sub.get(tag) else None
+                    if d:
+                        return d
+            except Exception:
+                pass
+    except Exception:
+        return None
+    return None
+
+
+def _find_atom(f, wanted: bytes, start: int, end: int):
+    """Find an MP4/QuickTime box `wanted` between byte offsets [start, end)."""
+    pos = start
+    for _ in range(100000):  # hard cap — never loop forever on a malformed file
+        if pos + 8 > end:
+            return None
+        f.seek(pos)
+        hdr = f.read(8)
+        if len(hdr) < 8:
+            return None
+        size = int.from_bytes(hdr[0:4], "big")
+        atom = hdr[4:8]
+        header_len = 8
+        if size == 1:  # 64-bit extended size
+            ext = f.read(8)
+            if len(ext) < 8:
+                return None
+            size = int.from_bytes(ext, "big")
+            header_len = 16
+        elif size == 0:  # extends to end of parent
+            size = end - pos
+        if size < header_len or pos + size > end:
+            return None
+        if atom == wanted:
+            return (pos, size, header_len)
+        pos += size
+    return None
+
+
+def _mvhd_date(path: Path):
+    """Creation time from an MP4/MOV moov→mvhd box (QuickTime 1904 epoch)."""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            fsize = f.tell()
+            moov = _find_atom(f, b"moov", 0, fsize)
+            if not moov:
+                return None
+            m_start, m_size, m_hdr = moov
+            mvhd = _find_atom(f, b"mvhd", m_start + m_hdr, m_start + m_size)
+            if not mvhd:
+                return None
+            v_start, v_size, v_hdr = mvhd
+            f.seek(v_start + v_hdr)
+            body = f.read(min(v_size - v_hdr, 24))
+            if len(body) < 8:
+                return None
+            version = body[0]
+            if version == 1:
+                if len(body) < 12:
+                    return None
+                secs = int.from_bytes(body[4:12], "big")
+            else:
+                secs = int.from_bytes(body[4:8], "big")
+            if secs <= 0:
+                return None
+            return _sane_date(_QT_EPOCH + datetime.timedelta(seconds=secs))
+    except Exception:
+        return None
+
+
+def _filename_date(name: str):
+    m = _FILENAME_DATE_RE.search(name or "")
+    if not m:
+        return None
+    try:
+        return datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except Exception:
+        return None
+
+
+def _capture_date(path: Path, ext: str, hint_name: str = ""):
+    """Best-effort capture date: EXIF (photos) → name → video metadata → mtime."""
+    ext = ext.lower()
+    d = None
+    if _is_image_ext(ext):
+        d = _sane_date(_exif_date(path))
+    if d is None:
+        d = _sane_date(_filename_date(hint_name or path.name))
+    if d is None and _is_video_ext(ext):
+        d = _mvhd_date(path)
+    if d is None:
+        try:
+            d = datetime.datetime.fromtimestamp(path.stat().st_mtime)
+        except Exception:
+            d = datetime.datetime.now()
+    return d
+
+
+def _organized_subpath(date, is_video: bool) -> Path:
+    top = "Videos" if is_video else "Pictures"
+    return Path(top) / str(date.year) / date.strftime("%B")
+
+
+def _unique_dest(folder: Path, safe_name: str) -> Path:
+    ext = Path(safe_name).suffix
+    stem = Path(safe_name).stem
+    dest = folder / safe_name
+    counter = 1
+    while dest.exists():
+        dest = folder / f"{stem}_{counter}{ext}"
+        counter += 1
+    return dest
+
+
+def _move_into_place(src: Path, base: Path) -> Path | None:
+    """Move one already-validated media file into its organized folder under
+    `base`. Returns the new path, or None if it was left where it is."""
+    ext = src.suffix.lower()
+    is_vid = _is_video_ext(ext)
+    if not (is_vid or _is_image_ext(ext)):
+        return None
+    date = _capture_date(src, ext, hint_name=src.name)
+    dest_folder = (base / _organized_subpath(date, is_vid)).resolve()
+    # Belt-and-suspenders: the computed folder must stay inside the root.
+    if not _is_within(dest_folder, base):
+        return None
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    safe_name = secure_filename(src.name) or src.name
+    dest = _unique_dest(dest_folder, safe_name)
+    if dest.resolve() == src.resolve():
+        return None
+    try:
+        os.replace(str(src), str(dest))        # atomic within the same filesystem
+    except OSError:
+        shutil.move(str(src), str(dest))       # fallback across devices
+    return dest
+
+
+def _is_already_organized(src: Path, base: Path) -> bool:
+    try:
+        rel = src.resolve().relative_to(base)
+    except ValueError:
+        return False
+    parts = rel.parts
+    if len(parts) != 4:
+        return False
+    return (parts[0] in _TOP_FOLDERS
+            and bool(_re.fullmatch(r"20\d{2}", parts[1]))
+            and parts[2] in _MONTH_NAMES)
+
+
+def organize_existing(base_path: str):
+    """Sort any loose/un-organized media already in a root into the structure.
+    Idempotent: files already in <Pictures|Videos>/<Year>/<Month>/ are skipped.
+    Never deletes; only moves, with collision-safe renaming."""
+    base = Path(base_path).resolve()
+    if not base.is_dir():
+        return (0, 0)
+    moved = skipped = 0
+    for dirpath, dirnames, filenames in os.walk(base):
+        # Don't descend into hidden/system dirs (.thumbnails, .incoming, certs…)
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "certs"]
+        cur = Path(dirpath)
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            src = cur / fn
+            if src.is_symlink():               # never follow links out of the root
+                continue
+            ext = src.suffix.lower()
+            if not (_is_video_ext(ext) or _is_image_ext(ext)):
+                continue
+            if _is_already_organized(src, base):
+                skipped += 1
+                continue
+            try:
+                if _move_into_place(src, base):
+                    moved += 1
+            except Exception:
+                # One bad file must never abort the whole pass.
+                continue
+    return (moved, skipped)
+
+
+def organize_all_roots():
+    if not getattr(config, "AUTO_ORGANIZE", True):
+        return
+    for name, path in get_roots().items():
+        try:
+            moved, skipped = organize_existing(path)
+            if moved:
+                print(f"  Organized {moved} existing file(s) in '{name}'.")
+        except Exception as e:
+            sys.stderr.write(f"  Could not organize root '{name}': {e}\n")
+
+
+# ---------------------------------------------------------------------------
 # TLS — self-signed certificate, pinned by the iOS app via SHA-256 fingerprint
 # ---------------------------------------------------------------------------
 
@@ -354,6 +614,14 @@ def start_servers(http_port: int = None, https_port: int = None):
     Both run in background daemon threads; this function returns immediately.
     The caller is responsible for keeping the process alive."""
     from werkzeug.serving import make_server
+
+    # Organize any loose/existing media into Pictures|Videos/<Year>/<Month>/
+    # BEFORE we start accepting connections, so the library is already tidy by
+    # the time the first upload arrives. Wrapped so it can never block startup.
+    try:
+        organize_all_roots()
+    except Exception as e:
+        sys.stderr.write(f"  Initial organize pass skipped: {e}\n")
 
     http_port = http_port or config.PORT
     https_port = https_port or getattr(config, "HTTPS_PORT", 8543)
@@ -599,14 +867,18 @@ def upload_file():
         root_name = unquote(request.headers.get("X-Upload-Root", ""))
         client_name = unquote(request.headers.get("X-Upload-Filename", ""))
     else:
-        subfolder = request.form.get("path", "")
         root_name = request.form.get("root", "")
         client_name = request.files["file"].filename or ""
 
-    folder = safe_path(subfolder, root_name)
-
-    if not folder.is_dir():
-        os.makedirs(folder, exist_ok=True)
+    # Resolve the ROOT (which shared folder) — the per-file subfolder the client
+    # may have sent is intentionally ignored: placement is decided here by the
+    # file's capture date so everything is auto-organized into
+    # Pictures|Videos/<Year>/<Month>/.
+    root_path = get_root_path(root_name)
+    if root_path is None:
+        abort(404, description=f"Unknown folder: {root_name}")
+    base = Path(root_path).resolve()
+    base.mkdir(parents=True, exist_ok=True)
 
     if not client_name:
         return jsonify({"error": "Empty filename"}), 400
@@ -620,49 +892,81 @@ def upload_file():
 
     # Validate extension against the allowlist.
     ext = Path(safe_name).suffix.lower()
-    extra_video = {".3gp", ".flv", ".ts", ".mts", ".m2ts"}
-    if ext not in config.ALL_EXTENSIONS and ext not in extra_video:
+    if ext not in config.ALL_EXTENSIONS and ext not in _EXTRA_VIDEO_EXTS:
         return jsonify({"error": f"Unsupported file type: {ext}"}), 400
 
-    # Avoid overwriting – add number suffix if needed
-    dest = folder / safe_name
-    counter = 1
-    while dest.exists():
-        stem = Path(safe_name).stem
-        dest = folder / f"{stem}_{counter}{ext}"
-        counter += 1
-
-    # Defense in depth: confirm the final destination is still inside the
-    # shared folder before writing.
-    if not _is_within(dest.resolve(), folder.resolve()):
-        abort(403, description="Resolved upload path is outside the shared folder")
-
+    # Write to a temp file inside the root first (same filesystem as the final
+    # organized folder, so the move below is an atomic rename — no second copy,
+    # no extra disk write). We need the bytes on disk before we can read the
+    # capture date for organizing.
+    incoming = base / ".incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix="up_", suffix=ext, dir=str(incoming))
+    tmp_path = Path(tmp_name)
     try:
-        if raw_mode:
-            # Stream the request body straight to disk in chunks — never buffer
-            # the whole (possibly multi-GB) upload in server memory.
-            with open(dest, "wb") as out:
+        max_bytes = int(getattr(config, "MAX_UPLOAD_SIZE_MB", 10240)) * 1024 * 1024
+        with os.fdopen(fd, "wb") as out:
+            if raw_mode:
+                # Stream the request body straight to disk in 1 MB chunks — never
+                # buffer the whole (possibly multi-GB) upload in server memory.
+                # Enforce the size ceiling so an authenticated client can't fill
+                # the disk by streaming an endless body.
+                written = 0
                 while True:
                     chunk = request.stream.read(1024 * 1024)
                     if not chunk:
                         break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise ValueError("Upload exceeds the maximum allowed size")
                     out.write(chunk)
-        else:
-            request.files["file"].save(str(dest))
+            else:
+                request.files["file"].save(out)
     except Exception as e:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
         return jsonify({"error": f"Save failed: {str(e)}"}), 500
 
     # Magic-byte validation: defense-in-depth against extension spoofing. The
-    # extension allowlist above lets through anything *named* .jpg / .mp4, even
-    # if its content is something else (e.g. a renamed binary). Sniff the first
-    # 16 bytes against known image/video signatures; on mismatch, delete and
-    # reject.
-    if not _content_matches_extension(dest, ext):
+    # extension allowlist lets through anything *named* .jpg / .mp4 even if its
+    # content is something else (e.g. a renamed binary). Sniff the header; on
+    # mismatch, delete and reject — before it ever lands in the library.
+    if not _content_matches_extension(tmp_path, ext):
         try:
-            dest.unlink()
+            tmp_path.unlink()
         except Exception:
             pass
         return jsonify({"error": f"File content doesn't match extension {ext}"}), 400
+
+    # Decide the destination. With AUTO_ORGANIZE (default) we sort by the file's
+    # capture date into Pictures|Videos/<Year>/<Month>/ — components are
+    # server-derived only. With it off, fall back to the client-chosen subfolder.
+    if getattr(config, "AUTO_ORGANIZE", True):
+        is_vid = _is_video_ext(ext)
+        date = _capture_date(tmp_path, ext, hint_name=safe_name)
+        dest_folder = (base / _organized_subpath(date, is_vid)).resolve()
+    else:
+        subfolder = ""
+        if raw_mode:
+            from urllib.parse import unquote as _unq
+            subfolder = _unq(request.headers.get("X-Upload-Path", ""))
+        else:
+            subfolder = request.form.get("path", "")
+        dest_folder = safe_path(subfolder, root_name).resolve()
+    if not _is_within(dest_folder, base):
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+        abort(403, description="Resolved upload path is outside the shared folder")
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    dest = _unique_dest(dest_folder, safe_name)
+    try:
+        os.replace(str(tmp_path), str(dest))
+    except OSError:
+        shutil.move(str(tmp_path), str(dest))
 
     return jsonify({
         "success": True,
