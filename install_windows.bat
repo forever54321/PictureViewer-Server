@@ -87,7 +87,12 @@ REM commands, leaving a broken access code that makes the server refuse to start
 set "PICTUREVIEWER_MEDIA_FOLDER=%MEDIA_FOLDER%"
 set "PICTUREVIEWER_ACCESS_CODE=%ACCESS_CODE%"
 set "PICTUREVIEWER_SECRET_KEY=%SECRET_KEY%"
-"%VENV_DIR%\Scripts\python.exe" -c "import os; open(os.path.join(r'%SCRIPT_DIR%', '.env'), 'w', encoding='utf-8').write(''.join('%%s=%%s\n' %% (k, os.environ[k]) for k in ('PICTUREVIEWER_MEDIA_FOLDER','PICTUREVIEWER_ACCESS_CODE','PICTUREVIEWER_SECRET_KEY')))"
+set "PV_ENV_FILE=%SCRIPT_DIR%.env"
+"%VENV_DIR%\Scripts\python.exe" -c "import os; open(os.environ['PV_ENV_FILE'], 'w', encoding='utf-8').write(''.join('%%s=%%s\n' %% (k, os.environ[k]) for k in ('PICTUREVIEWER_MEDIA_FOLDER','PICTUREVIEWER_ACCESS_CODE','PICTUREVIEWER_SECRET_KEY')))"
+if not exist "%PV_ENV_FILE%" (
+    echo ERROR: could not write the settings file ^(.env^). Please re-run this installer.
+    pause
+)
 
 REM Restrict the .env (contains SECRET_KEY + ACCESS_CODE) to the current user only.
 icacls "%SCRIPT_DIR%.env" /inheritance:r /grant:r "%USERNAME%:F" >nul
