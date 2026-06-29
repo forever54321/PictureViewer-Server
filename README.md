@@ -31,13 +31,15 @@ After it's running, the status window has a **Manage Folders…** button so you 
 
 If you want to run from the Python source instead of using the installer:
 
-| Platform | Command |
+| Platform | How |
 |---|---|
 | macOS | `bash install_mac.sh` |
-| Windows | `powershell -ExecutionPolicy Bypass -File install_windows.ps1` |
+| **Windows** | **Double-click `install_windows.bat`** (in File Explorer) — or run `install_windows.bat` in a terminal |
 | Linux | `bash install_linux.sh` |
 
 Requires Python 3.8 or newer. The script creates a virtual environment, installs dependencies, runs a setup prompt, and creates a launcher.
+
+> **Windows note:** Use **`install_windows.bat`** — it runs in Command Prompt and is **not** affected by PowerShell's script-execution policy. (Running `install_windows.ps1` directly fails with *"…is not digitally signed… cannot be loaded"* unless you prefix it with `powershell -ExecutionPolicy Bypass -File install_windows.ps1`. The `.bat` avoids that entirely — just double-click it.)
 
 ---
 
