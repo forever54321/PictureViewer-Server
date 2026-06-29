@@ -14,6 +14,7 @@ import hmac
 import socket
 import hashlib
 import datetime
+import calendar
 import ipaddress
 import mimetypes
 import threading
@@ -400,8 +401,53 @@ def _filename_date(name: str):
         return None
 
 
+# Month-name / number lookup for reading the user's EXISTING year/month folders.
+_MONTH_TOKEN = {}
+for _i in range(1, 13):
+    _MONTH_TOKEN[calendar.month_name[_i].lower()] = _i   # "june"
+    _MONTH_TOKEN[calendar.month_abbr[_i].lower()] = _i   # "jun"
+
+
+def _month_from_token(tok: str):
+    t = tok.strip().lower()
+    if t in _MONTH_TOKEN:                       # "June", "Jun"
+        return _MONTH_TOKEN[t]
+    m = _re.match(r"(\d{1,2})(?:\D|$)", t)      # "06", "6", "06-June"
+    if m:
+        v = int(m.group(1))
+        if 1 <= v <= 12:
+            return v
+    for name, idx in _MONTH_TOKEN.items():      # "June 2024", "2024-June"
+        if len(name) > 3 and name in t:
+            return idx
+    return None
+
+
+def _folder_date(path: Path):
+    """Infer a date from the folder names a file already sits in, so existing
+    Year/Month organization is preserved for files that have no embedded date."""
+    year = month = None
+    for parent in list(path.parents)[:4]:
+        part = parent.name
+        if year is None:
+            ym = _re.search(r"(20\d{2})", part)
+            if ym:
+                year = int(ym.group(1))
+        if month is None:
+            month = _month_from_token(part)
+        if year and month:
+            break
+    if year and month:
+        try:
+            return datetime.datetime(year, month, 1)
+        except Exception:
+            return None
+    return None
+
+
 def _capture_date(path: Path, ext: str, hint_name: str = ""):
-    """Best-effort capture date: EXIF (photos) → name → video metadata → mtime."""
+    """Best-effort capture date: EXIF → name → video metadata → existing
+    Year/Month folder → file mtime."""
     ext = ext.lower()
     d = None
     if _is_image_ext(ext):
@@ -410,6 +456,8 @@ def _capture_date(path: Path, ext: str, hint_name: str = ""):
         d = _sane_date(_filename_date(hint_name or path.name))
     if d is None and _is_video_ext(ext):
         d = _mvhd_date(path)
+    if d is None:
+        d = _sane_date(_folder_date(path))
     if d is None:
         try:
             d = datetime.datetime.fromtimestamp(path.stat().st_mtime)
@@ -510,6 +558,23 @@ def organize_existing(base_path: str):
             except Exception:
                 # One bad file must never abort the whole pass.
                 continue
+
+    # Tidy up folders left empty by the moves (e.g. an old Year/Month tree whose
+    # files were re-homed). os.rmdir only removes EMPTY directories, so this can
+    # never delete a file or a non-empty folder. Deepest-first; never touches the
+    # root, hidden dirs, or library packages.
+    if moved:
+        candidates = []
+        for dpath, dnames, _fn in os.walk(base, topdown=True):
+            dnames[:] = [d for d in dnames
+                         if not d.startswith(".") and d != "certs" and not _is_package_dir(d)]
+            if Path(dpath).resolve() != base:
+                candidates.append(dpath)
+        for dpath in sorted(candidates, key=len, reverse=True):
+            try:
+                os.rmdir(dpath)        # succeeds only if the directory is empty
+            except OSError:
+                pass
     return (moved, skipped)
 
 
