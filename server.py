@@ -263,6 +263,22 @@ _QT_EPOCH = datetime.datetime(1904, 1, 1)
 _FILENAME_DATE_RE = _re.compile(r"(20\d{2})[-_]?(0[1-9]|1[0-2])[-_]?(0[1-9]|[12]\d|3[01])")
 
 
+# Directory packages we must NEVER walk into or move files out of — doing so
+# would corrupt the app's library. The biggest one is the macOS Photos Library
+# (.photoslibrary), which lives in the default ~/Pictures folder.
+_PACKAGE_DIR_SUFFIXES = (
+    ".photoslibrary", ".photolibrary", ".aplibrary", ".migratedaplibrary",
+    ".lrlibrary", ".lrdata", ".imovielibrary", ".tvlibrary", ".theater",
+    ".fcpbundle", ".musiclibrary", ".app", ".bundle", ".framework",
+    ".photoslibrary", ".pkpass", ".rcproject",
+)
+
+
+def _is_package_dir(name: str) -> bool:
+    low = name.lower()
+    return any(low.endswith(s) for s in _PACKAGE_DIR_SUFFIXES)
+
+
 def _is_video_ext(ext: str) -> bool:
     ext = ext.lower()
     return ext in config.VIDEO_EXTENSIONS or ext in _EXTRA_VIDEO_EXTS
@@ -465,7 +481,12 @@ def organize_existing(base_path: str):
     moved = skipped = seen = 0
     for dirpath, dirnames, filenames in os.walk(base):
         # Don't descend into hidden/system dirs (.thumbnails, .incoming, certs…)
-        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "certs"]
+        # OR into app library packages (.photoslibrary etc.) — walking into a
+        # Photos Library and moving its internal files out would corrupt it.
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and d != "certs" and not _is_package_dir(d)
+        ]
         cur = Path(dirpath)
         for fn in filenames:
             if fn.startswith("."):
