@@ -1,10 +1,11 @@
-venv/
+
 __pycache__/
-*.pyc
 .env
 .thumbnails/
 *.log
-
+*.pem
+*.pyc
 # certs / keys (generated at runtime — never commit)
 certs/
-*.pem
+folders.json
+venv/

@@ -147,16 +147,42 @@ def token_required(f):
     return decorated
 
 
-def get_roots() -> dict:
-    """Return all configured roots as {name: path}.
+def _extra_roots_file() -> str:
+    """folders.json lives next to config.py — written by the add_folder tool."""
+    return os.path.join(os.path.dirname(os.path.abspath(config.__file__)), "folders.json")
 
-    Backwards compatible: if no MEDIA_ROOTS in config, exposes the legacy
-    single MEDIA_FOLDER as a root named "Library".
+
+def get_roots() -> dict:
+    """All shared folders ("roots") as {name: path}, in the order:
+    the main media folder, then any extra folders the user added (via the
+    add_folder tool's folders.json, or the GUI launcher's MEDIA_ROOTS).
+
+    Read live each call, so a folder added with the tool shows up in the app
+    without restarting the server. Both phones use the same access code and
+    pick which of these folders to back up to.
     """
-    roots = getattr(config, "MEDIA_ROOTS", None)
-    if isinstance(roots, dict) and roots:
-        return roots
-    return {"Library": config.MEDIA_FOLDER}
+    roots: dict = {}
+    main = config.MEDIA_FOLDER
+    if main:
+        roots["Library"] = main          # keep the legacy name for the main folder
+
+    cfg_roots = getattr(config, "MEDIA_ROOTS", None)
+    if isinstance(cfg_roots, dict):
+        for n, p in cfg_roots.items():
+            if n and p:
+                roots[str(n)] = str(p)
+
+    try:
+        with open(_extra_roots_file(), encoding="utf-8") as fh:
+            extra = json.load(fh)
+        if isinstance(extra, dict):
+            for n, p in extra.items():
+                if n and p:
+                    roots[str(n)] = str(p)
+    except Exception:
+        pass
+
+    return roots or {"Library": config.MEDIA_FOLDER}
 
 
 def get_root_path(name: str) -> str | None:

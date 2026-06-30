@@ -34,6 +34,12 @@ Videos/2026/01-January/VID_0001.mov
 
 To turn this off and keep uploads in whatever folder the app chooses, set the environment variable `PICTUREVIEWER_AUTO_ORGANIZE=0` (or edit `AUTO_ORGANIZE = False` in `config.py`).
 
+### Backing up more than one phone
+
+You can share several folders and let each phone back up to its own. **Double-click `add_folder.bat`** and enter a name (e.g. *Wife's iPhone*) and a folder path (e.g. `C:\Backups\Wife`). It appears in the app right away — no restart needed.
+
+Both phones connect with the **same access code**; in the app, each phone just picks which folder to back up to from the list. Every folder is auto-organized into `Photos`/`Videos` by year and month independently.
+
 ---
 
 ## Requirements
