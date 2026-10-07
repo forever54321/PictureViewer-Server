@@ -1,55 +1,80 @@
 """Add (or update) a shared backup folder that phones can pick in the app.
 
-Reads the folder name + path from the PV_FOLDER_NAME / PV_FOLDER_PATH
-environment variables (set by add_folder.bat so special characters survive),
-creates the folder if needed, and saves it to folders.json next to this file.
-The running server reads folders.json live, so the new folder shows up in the
-app the next time it refreshes — no restart needed.
+    python add_folder.py                      asks for a name and a folder path
+    PV_FOLDER_NAME=... PV_FOLDER_PATH=... python add_folder.py   (non-interactive)
+
+The folder is saved to folders.json next to the server's config (the same
+file the running server reads live, so it appears in the app shortly — no
+restart needed). Dangerous folders (a whole drive, your user folder, system
+folders, the server's own folder) are refused, and folders.json is written
+atomically so a crash can never leave it half-written.
 """
-import os
+from __future__ import annotations
+
 import json
+import os
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FOLDERS_FILE = os.path.join(HERE, "folders.json")
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import config  # noqa: E402  (honours PICTUREVIEWER_CONFIG; no side effects)
+import safety  # noqa: E402
+
+FOLDERS_FILE = config.FOLDERS_FILE
 
 
-def main():
-    name = (os.environ.get("PV_FOLDER_NAME") or "").strip().strip('"')
-    path = (os.environ.get("PV_FOLDER_PATH") or "").strip().strip('"')
+def load_folders() -> dict:
+    try:
+        with open(FOLDERS_FILE, encoding="utf-8-sig") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
+
+def add_folder(name: str, path: str):
+    """Returns (ok, message)."""
+    name = (name or "").strip()
+    path = os.path.expandvars(os.path.expanduser(safety.unquote_path(path)))
     if not name or not path:
-        print("  A name and a folder path are both required. Nothing was saved.")
-        return 1
-
-    # Create the folder if it doesn't exist yet.
+        return False, "A name and a folder path are both required. Nothing was saved."
+    if name == "Library":
+        return False, "'Library' is reserved for the main folder — pick another name."
+    if any(ord(c) < 32 for c in name) or len(name) > 80:
+        return False, "That name isn't valid (max 80 characters, no control characters)."
+    path = os.path.abspath(path)
+    problem = safety.root_problem(path, app_dirs=config.app_dirs())
+    if problem:
+        return False, f"Refused: {problem}"
     try:
         os.makedirs(path, exist_ok=True)
     except OSError as e:
-        print(f"  Could not create the folder '{path}': {e}")
-        return 1
-
-    data = {}
-    if os.path.exists(FOLDERS_FILE):
-        try:
-            with open(FOLDERS_FILE, encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception:
-            data = {}
-
+        return False, f"Could not create the folder '{path}': {e}"
+    data = load_folders()
     existed = name in data
     data[name] = path
-    with open(FOLDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
+    config.write_json_atomic(FOLDERS_FILE, data)
     verb = "Updated" if existed else "Added"
-    print(f"  {verb} backup folder '{name}'  ->  {path}")
-    print("  It will appear in the app shortly (no restart needed).")
-    print("  All your shared folders:")
-    for n, p in data.items():
-        print(f"    - {n}: {p}")
-    return 0
+    return True, f"{verb} backup folder '{name}' -> {path}"
+
+
+def main():
+    name = os.environ.get("PV_FOLDER_NAME")
+    path = os.environ.get("PV_FOLDER_PATH")
+    if name is None and path is None and sys.stdin.isatty():
+        print("Add a backup folder (each phone can pick its own folder in the app).")
+        name = input("  Name to show in the app (e.g. Wife's iPhone): ")
+        path = input("  Full folder path (e.g. D:\\Backups\\Wife): ")
+    ok, msg = add_folder(name or "", path or "")
+    print("  " + msg)
+    if ok:
+        print("  It will appear in the app shortly (no restart needed).")
+        print("  All your extra shared folders:")
+        for n, p in load_folders().items():
+            print(f"    - {n}: {p}")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

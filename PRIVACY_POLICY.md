@@ -41,6 +41,7 @@ The app uses Apple's on-device Vision framework to categorize photos. All AI pro
 - Server connection details (IP address, access token) are stored locally on your device
 - Upload history (which photos have been uploaded) is stored locally on your device
 - No data is stored on any external server
+- The server program on your computer keeps a local log file (requests, errors, and failed sign-in attempts with the phone's local IP address) in its own logs folder; it never contains your access code or login tokens and is never sent anywhere
 
 ## Children's Privacy
 

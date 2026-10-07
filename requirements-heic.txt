@@ -1,0 +1,4 @@
+# OPTIONAL: HEIC/HEIF thumbnails and capture dates for iPhone photos.
+# The server runs without it (iOS can still show HEIC originals).
+#   pip install --only-binary=:all: -r requirements-heic.txt
+pillow-heif==1.8.0

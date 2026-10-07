@@ -1,11 +1,30 @@
-
+# Python
 __pycache__/
-.env
-.thumbnails/
-*.log
-*.pem
 *.pyc
-# certs / keys (generated at runtime — never commit)
-certs/
-folders.json
 venv/
+.venv/
+
+# Runtime data - never commit (secrets, certificates, personal paths)
+.env
+config.json
+secret.key
+folders.json
+certs/
+*.pem
+logs/
+*.log
+.thumbnails/
+.incoming/
+
+# Build output
+dist/
+installer/macos/*.app/
+installer/macos/*.dmg
+installer/macos/dmg_staging/
+installer/windows/build/
+installer/windows/dist/
+
+# OS junk
+._*
+.DS_Store
+Thumbs.db

@@ -1,8 +1,8 @@
-# Remote Access Guide for PictureViewer Server
+# Remote Access Guide for Lumina Gallery Server
 
-PictureViewer is designed for **local network access only**. Your iPhone and computer must be on the same Wi-Fi network. To access your photos from outside your home (e.g. from work, traveling, or on mobile data), you need a **secure tunnel** — never expose the server directly to the internet.
+Lumina Gallery Server is designed for **local network access only**. Your iPhone and computer must be on the same Wi-Fi network. To access your photos from outside your home (e.g. from work, traveling, or on mobile data), you need a **secure tunnel** — never expose the server directly to the internet.
 
-Below are 4 recommended methods, from easiest to most technical.
+Below are the options, from easiest to most technical (Option 3 is listed only to explain why it is not supported).
 
 ---
 
@@ -14,7 +14,7 @@ Below are 4 recommended methods, from easiest to most technical.
 
 ### Setup
 
-#### On your computer (where PictureViewer Server runs):
+#### On your computer (where Lumina Gallery Server runs):
 
 1. **Download Tailscale:**
    - Windows: https://tailscale.com/download/windows
@@ -28,7 +28,7 @@ Below are 4 recommended methods, from easiest to most technical.
    - macOS: Check the Tailscale menu bar icon
    - Linux: Run `tailscale ip -4`
 
-4. **Start PictureViewer Server** as normal
+4. **Start Lumina Gallery Server** as normal
 
 #### On your iPhone:
 
@@ -39,12 +39,26 @@ Below are 4 recommended methods, from easiest to most technical.
 
 3. **Connect** — toggle Tailscale on
 
-4. **In PictureViewer app**, enter your Tailscale IP as the server address:
+4. **In Lumina Gallery app**, enter your Tailscale IP as the server address:
    ```
    http://100.x.y.z:8500
    ```
 
 5. Enter your access code and connect — done!
+
+### Windows firewall note
+
+The Windows installer's firewall rule only allows your **local subnet**. Tailscale
+devices connect from `100.x.y.z` addresses, so also allow Tailscale's range
+(Administrator PowerShell, once):
+
+```powershell
+New-NetFirewallRule -DisplayName "Lumina Gallery Server (Tailscale)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8500,8543 -RemoteAddress 100.64.0.0/10
+```
+
+If you'd rather use your computer's MagicDNS name (e.g. `my-pc.tailnet-name.ts.net`)
+instead of the 100.x address, add it to `allowed_hosts` in `config.json`, e.g.
+`"allowed_hosts": ["my-pc.tailnet-name.ts.net"]`, and restart the server.
 
 ### Why Tailscale?
 - Zero configuration on your router
@@ -125,7 +139,7 @@ Below are 4 recommended methods, from easiest to most technical.
 
 3. **Connect** the VPN tunnel
 
-4. **In PictureViewer app**, use your computer's local IP:
+4. **In Lumina Gallery app**, use your computer's local IP:
    ```
    http://192.168.1.x:8500
    ```
@@ -141,89 +155,22 @@ Below are 4 recommended methods, from easiest to most technical.
 
 ---
 
-## Option 3: Cloudflare Tunnel (No Port Forwarding)
+## Option 3: Cloudflare Tunnel — not supported
 
-**What it is:** A free service from Cloudflare that creates an encrypted tunnel from your computer to Cloudflare's network, giving you an HTTPS URL accessible from anywhere. No ports to open on your router.
+**Don't use a Cloudflare Tunnel (or ngrok, `trycloudflare.com`, or any public
+URL) with this server.** It can't work safely with the app today:
 
-**Cost:** Free
+- A tunnel puts your photo server on the **public internet**, where anyone can
+  try access codes against it.
+- The app pins the server's own self-signed certificate and switches to the
+  HTTPS port the server reports (8543). Through a tunnel that port doesn't
+  exist, so the app can't complete the secure connection, and the server
+  deliberately refuses access codes over plain HTTP when HTTPS is available.
+- The server rejects unknown host names (DNS-rebinding protection) unless you
+  list them in `allowed_hosts`, which you should not do for a public name.
 
-**Requires:** A free Cloudflare account and a domain name (can use a free one)
-
-### Setup
-
-#### On your computer:
-
-1. **Sign up** for Cloudflare: https://dash.cloudflare.com/sign-up
-
-2. **Install cloudflared:**
-   - Windows: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
-   - macOS: `brew install cloudflared`
-   - Linux:
-     ```bash
-     # Debian/Ubuntu
-     curl -fsSL https://pkg.cloudflare.com/cloudflared-linux-amd64.deb -o cloudflared.deb
-     sudo dpkg -i cloudflared.deb
-     ```
-
-3. **Authenticate:**
-   ```bash
-   cloudflared tunnel login
-   ```
-   This opens a browser — select your domain.
-
-4. **Create tunnel:**
-   ```bash
-   cloudflared tunnel create pictureviewer
-   ```
-
-5. **Configure the tunnel.** Create `~/.cloudflared/config.yml`:
-   ```yaml
-   tunnel: pictureviewer
-   credentials-file: /path/to/.cloudflared/<tunnel-id>.json
-
-   ingress:
-     - hostname: photos.yourdomain.com
-       service: http://localhost:8500
-     - service: http_status:404
-   ```
-
-6. **Add DNS record:**
-   ```bash
-   cloudflared tunnel route dns pictureviewer photos.yourdomain.com
-   ```
-
-7. **Start the tunnel:**
-   ```bash
-   cloudflared tunnel run pictureviewer
-   ```
-
-8. **Auto-start (optional):**
-   ```bash
-   # Linux
-   sudo cloudflared service install
-   sudo systemctl enable cloudflared
-
-   # macOS
-   sudo cloudflared service install
-   ```
-
-#### On your iPhone:
-
-1. **In PictureViewer app**, enter your tunnel URL:
-   ```
-   https://photos.yourdomain.com
-   ```
-
-2. Enter your access code — done! Full HTTPS encryption.
-
-### Tips
-- Cloudflare adds DDoS protection automatically
-- You get HTTPS for free — no SSL certificate needed
-- If you don't have a domain, you can get a free one from Freenom or use Cloudflare's `trycloudflare.com` for quick testing:
-  ```bash
-  cloudflared tunnel --url http://localhost:8500
-  ```
-  This gives you a temporary public URL instantly.
+Use **Tailscale** (Option 1) or **WireGuard** (Option 2) instead: they keep
+the server private and the app works unchanged.
 
 ---
 
@@ -254,7 +201,7 @@ Below are 4 recommended methods, from easiest to most technical.
    ssh -L 8500:localhost:8500 username@your-public-ip
    ```
 
-3. **In PictureViewer app**, connect to:
+3. **In Lumina Gallery app**, connect to:
    ```
    http://localhost:8500
    ```
@@ -280,13 +227,13 @@ ssh -N -L 0.0.0.0:8500:home-pc-ip:8500 username@your-public-ip
 |--------|:---:|:---:|:---:|:---:|
 | **Tailscale** | Very Easy | No | Free | Fast |
 | **WireGuard** | Medium | Yes (UDP 51820) | Free | Fastest |
-| **Cloudflare Tunnel** | Medium | No | Free | Good |
+| ~~Cloudflare Tunnel~~ | Not supported (public exposure) | — | — | — |
 | **SSH Tunnel** | Technical | Yes (TCP 22) | Free | Good |
 
 ## Security Reminders
 
-- **Never** expose PictureViewer Server directly to the internet without a VPN/tunnel
-- **Never** use port forwarding for the server port (8500) — use a VPN instead
+- **Never** expose Lumina Gallery Server directly to the internet without a VPN/tunnel
+- **Never** use port forwarding for the server ports (8500/8543) — use a VPN instead
 - **Always** use a strong, unique access code — **at least 12 characters** with a lowercase letter, an uppercase letter, a number, and a special character (the server enforces this and refuses to start with a weaker code)
 - **Keep** your server software updated
 - Consider using a **firewall** to restrict which IPs can access the server
